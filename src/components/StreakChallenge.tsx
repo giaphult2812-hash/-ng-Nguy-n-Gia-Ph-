@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Gift, ChevronLeft, ChevronRight, Inbox, Rocket, Users, TrendingUp, Trophy } from 'lucide-react';
 
 interface StreakChallengeProps {
@@ -6,15 +6,85 @@ interface StreakChallengeProps {
   jackpotPool: number;
 }
 
+// Generate random names like Tra***, Bos***
+const generateRandomName = () => {
+  const prefixes = ['Tra', 'Bos', 'Ngo', 'Beo', 'Huy', 'Lan', 'Min', 'Dat', 'Son', 'Tua', 'Kha', 'Linh'];
+  const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+  return `${prefix}***`;
+};
+
+// Generate random streak type
+const generateStreakType = () => {
+  const isWin = Math.random() > 0.5;
+  const streakCount = Math.floor(Math.random() * 5) + 5; // 5x to 9x
+  return {
+    type: `${isWin ? 'Win' : 'Lose'} Streak ${streakCount}x`,
+    isWin
+  };
+};
+
 export function StreakChallenge({ onBackToTrade, jackpotPool }: StreakChallengeProps) {
   const [activeTab, setActiveTab] = useState<'GLOBAL' | 'PERSONAL'>('GLOBAL');
+  const [globalWinners, setGlobalWinners] = useState<any[]>([]);
+  const [megaWinner, setMegaWinner] = useState({ 
+    name: generateRandomName().replace('***', 'WINNER').toUpperCase(), 
+    amount: Number((Math.random() * 2000 + 2000).toFixed(2)), 
+    date: new Date().toLocaleDateString('vi-VN') 
+  });
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const globalWinners = [
-    { type: 'Win Streak 9x', amount: 23.25, user: 'Tra***', date: '09/03/2026', isWin: true },
-    { type: 'Win Streak 9x', amount: 30.72, user: 'Bos***', date: '09/03/2026', isWin: true },
-    { type: 'Win Streak 9x', amount: 30.72, user: 'ngo***', date: '09/03/2026', isWin: true },
-    { type: 'Lose Streak 9x', amount: 18.81, user: 'Beo***', date: '09/03/2026', isWin: false },
-  ];
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  // Initialize and periodically update winners
+  useEffect(() => {
+    const generateInitialWinners = () => {
+      const winners = [];
+      const today = new Date();
+      for (let i = 0; i < 4; i++) {
+        const streak = generateStreakType();
+        winners.push({
+          type: streak.type,
+          amount: Number((Math.random() * 50 + 10).toFixed(2)),
+          user: generateRandomName(),
+          date: today.toLocaleDateString('vi-VN'),
+          isWin: streak.isWin
+        });
+      }
+      return winners;
+    };
+
+    setGlobalWinners(generateInitialWinners());
+
+    // Add a new winner every 5 seconds to simulate live activity
+    const interval = setInterval(() => {
+      setGlobalWinners(prev => {
+        const streak = generateStreakType();
+        const newWinner = {
+          type: streak.type,
+          amount: Number((Math.random() * 50 + 10).toFixed(2)),
+          user: generateRandomName(),
+          date: new Date().toLocaleDateString('vi-VN'),
+          isWin: streak.isWin
+        };
+        // Keep only top 4
+        return [newWinner, ...prev.slice(0, 3)];
+      });
+      
+      // Occasionally update Mega Winner (20% chance per interval)
+      if (Math.random() < 0.2) {
+        setMegaWinner({
+          name: generateRandomName().replace('***', 'WINNER').toUpperCase(),
+          amount: Number((Math.random() * 2000 + 2000).toFixed(2)),
+          date: new Date().toLocaleDateString('vi-VN')
+        });
+      }
+    }, 5000); // 5 seconds
+
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden bg-slate-50 text-slate-900 relative">
@@ -51,7 +121,7 @@ export function StreakChallenge({ onBackToTrade, jackpotPool }: StreakChallengeP
             </div>
 
             <div className="inline-block bg-purple-100 border border-purple-200 rounded-full px-6 py-1.5 shadow-sm">
-              <span className="text-purple-700 font-bold text-sm">$3,742.18 <span className="text-[10px] text-purple-500 uppercase ml-1 font-black">Mega Prizes</span></span>
+              <span className="text-purple-700 font-bold text-sm">${megaWinner.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-[10px] text-purple-500 uppercase ml-1 font-black">Mega Prizes</span></span>
             </div>
           </div>
 
@@ -62,7 +132,10 @@ export function StreakChallenge({ onBackToTrade, jackpotPool }: StreakChallengeP
             Giao dịch & Chiến thắng
           </button>
           
-          <button className="text-purple-600 hover:text-purple-500 text-sm font-bold transition-colors">
+          <button 
+            onClick={() => showToast("Tính năng đang phát triển")}
+            className="text-purple-600 hover:text-purple-500 text-sm font-bold transition-colors"
+          >
             Xem thêm thông tin
           </button>
         </div>
@@ -77,18 +150,18 @@ export function StreakChallenge({ onBackToTrade, jackpotPool }: StreakChallengeP
           </div>
 
           {/* Mega Jackpot Winner Card */}
-          <div className="bg-gradient-to-b from-amber-50 to-white border border-amber-200 rounded-3xl p-6 text-center mb-8 relative overflow-hidden shadow-sm">
+          <div className="bg-gradient-to-b from-amber-50 to-white border border-amber-200 rounded-3xl p-6 text-center mb-8 relative overflow-hidden shadow-sm transition-all duration-500">
             <div className="absolute top-0 left-1/2 -translate-x-1/2 bg-amber-100 border border-amber-200 rounded-b-xl px-4 py-1 whitespace-nowrap">
               <span className="text-amber-600 text-xs font-black tracking-wider">MEGA JACKPOT WINNER</span>
             </div>
             
             <div className="mt-10 mb-2">
-              <h3 className="text-2xl font-black text-amber-600 tracking-wide">BEPHUCCUTE</h3>
-              <p className="text-slate-500 text-sm font-medium">Won Mega Prizes 8/3/2026</p>
+              <h3 className="text-2xl font-black text-amber-600 tracking-wide">{megaWinner.name}</h3>
+              <p className="text-slate-500 text-sm font-medium">Won Mega Prizes {megaWinner.date}</p>
             </div>
             
             <div className="inline-block bg-purple-100 border border-purple-200 rounded-full px-6 py-1.5 shadow-sm mt-2">
-              <span className="text-purple-700 font-black text-lg">$3,742.18</span>
+              <span className="text-purple-700 font-black text-lg">${megaWinner.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           </div>
 
@@ -142,13 +215,19 @@ export function StreakChallenge({ onBackToTrade, jackpotPool }: StreakChallengeP
           {/* Pagination (Visual only) */}
           {activeTab === 'GLOBAL' && (
             <div className="flex items-center justify-center gap-2 mt-6">
-              <button className="w-8 h-8 rounded-full border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-slate-100 transition-colors">
+              <button 
+                onClick={() => showToast("Bạn đang ở trang đầu tiên")}
+                className="w-8 h-8 rounded-full border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-slate-100 transition-colors"
+              >
                 <ChevronLeft className="w-4 h-4" />
               </button>
               <button className="w-8 h-8 rounded-full bg-purple-600 text-white flex items-center justify-center text-sm font-bold shadow-sm">
                 1
               </button>
-              <button className="w-8 h-8 rounded-full border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-slate-100 transition-colors">
+              <button 
+                onClick={() => showToast("Tính năng đang phát triển")}
+                className="w-8 h-8 rounded-full border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-slate-100 transition-colors"
+              >
                 <ChevronRight className="w-4 h-4" />
               </button>
             </div>
@@ -224,6 +303,13 @@ export function StreakChallenge({ onBackToTrade, jackpotPool }: StreakChallengeP
         </div>
 
       </div>
+
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-xl z-[100] font-medium text-sm border border-slate-700 transition-all">
+          {toastMessage}
+        </div>
+      )}
     </div>
   );
 }

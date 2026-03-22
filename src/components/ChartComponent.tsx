@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, CrosshairMode, CandlestickSeries, Time, LineSeries, HistogramSeries } from 'lightweight-charts';
+import { fetchCandles } from '../services/binanceService';
 
 interface ChartComponentProps {
   data: any[];
@@ -19,6 +20,8 @@ export const ChartComponent: React.FC<ChartComponentProps> = () => {
   
   const lastPriceRef = useRef<number | null>(null);
   const candlesDataRef = useRef<any[]>([]); // Store full candle data for calculations
+  const wsRef = useRef<WebSocket | null>(null);
+  const colorTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Helper to calculate SMA
   const calculateSMA = (data: any[], period: number) => {
@@ -139,126 +142,128 @@ export const ChartComponent: React.FC<ChartComponentProps> = () => {
     sma10SeriesRef.current = sma10Series;
     volumeSeriesRef.current = volumeSeries;
 
-    // Generate Initial Mock Data
-    const now = Date.now();
-    const currentMinuteMs = Math.floor(now / 60000) * 60000;
-    let basePrice = 67620.25;
-    const initialData = [];
-    
-    for (let i = 100; i >= 0; i--) {
-      const timeMs = currentMinuteMs - (i * 60000);
-      const volatility = 10;
-      const open = basePrice;
-      const close = open + (Math.random() - 0.5) * volatility * 2;
-      const high = Math.max(open, close) + Math.random() * volatility;
-      const low = Math.min(open, close) - Math.random() * volatility;
-      const volume = Math.random() * 100;
-      
-      initialData.push({
-        time: Math.floor(timeMs / 1000) as Time, // Lightweight charts uses seconds for timestamp
-        open,
-        high,
-        low,
-        close,
-        volume
-      });
-      basePrice = close;
-    }
+    const initializeChart = async () => {
+      try {
+        const binanceData = await fetchCandles(100);
+        const initialData = binanceData.map((d: any) => ({
+          time: Math.floor(d[0] / 1000) as Time,
+          open: parseFloat(d[1]),
+          high: parseFloat(d[2]),
+          low: parseFloat(d[3]),
+          close: parseFloat(d[4]),
+          volume: parseFloat(d[5])
+        }));
 
-    candlesDataRef.current = initialData;
-    candleSeries.setData(initialData);
+        candlesDataRef.current = initialData;
+        candleSeries.setData(initialData);
 
-    const volumeData = initialData.map((d: any) => ({
-      time: d.time,
-      value: d.volume,
-      color: d.close >= d.open ? '#10B981' : '#EF4444',
-    }));
-    volumeSeries.setData(volumeData);
-    
-    const sma5Data = calculateSMA(initialData, 5);
-    const sma10Data = calculateSMA(initialData, 10);
-    sma5Series.setData(sma5Data);
-    sma10Series.setData(sma10Data);
+        const volumeData = initialData.map((d: any) => ({
+          time: d.time,
+          value: d.volume,
+          color: d.close >= d.open ? '#10B981' : '#EF4444',
+        }));
+        volumeSeries.setData(volumeData);
+        
+        const sma5Data = calculateSMA(initialData, 5);
+        const sma10Data = calculateSMA(initialData, 10);
+        sma5Series.setData(sma5Data);
+        sma10Series.setData(sma10Data);
 
-    setSentiment(calculateSentiment(initialData));
+        setSentiment(calculateSentiment(initialData));
 
-    if (initialData.length > 0) {
-      const lastClose = initialData[initialData.length - 1].close;
-      setCurrentPrice(lastClose);
-      lastPriceRef.current = lastClose;
-    }
+        if (initialData.length > 0) {
+          const lastClose = initialData[initialData.length - 1].close;
+          setCurrentPrice(lastClose);
+          lastPriceRef.current = lastClose;
+        }
 
-    // Mock Real-time Updates (Every 1 second)
-    let currentCandle = { ...initialData[initialData.length - 1] };
-    
-    const intervalId = setInterval(() => {
-      const currentTimeMs = Date.now();
-      const currentMinuteMs = Math.floor(currentTimeMs / 60000) * 60000;
-      const currentMinuteSec = Math.floor(currentMinuteMs / 1000) as Time;
-      
-      const volatility = 2; // Price movement per second
-      const priceChange = (Math.random() - 0.5) * volatility;
-      const newPrice = currentCandle.close + priceChange;
-      const newVolume = Math.random() * 10;
+        // Real-time Updates via Binance WebSocket
+        let currentCandle = { ...initialData[initialData.length - 1] };
+        
+        const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@kline_1m');
+        wsRef.current = ws;
 
-      if (currentCandle.time !== currentMinuteSec) {
-        // New minute, start new candle
-        currentCandle = {
-          time: currentMinuteSec,
-          open: currentCandle.close,
-          high: Math.max(currentCandle.close, newPrice),
-          low: Math.min(currentCandle.close, newPrice),
-          close: newPrice,
-          volume: newVolume
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          const kline = data.k;
+          
+          const newPrice = parseFloat(kline.c); // Current close price
+          const newVolume = parseFloat(kline.v); // Current volume
+          
+          const currentMinuteSec = Math.floor(kline.t / 1000) as Time;
+
+          if (currentCandle.time !== currentMinuteSec) {
+            // New minute, start new candle
+            currentCandle = {
+              time: currentMinuteSec,
+              open: parseFloat(kline.o),
+              high: parseFloat(kline.h),
+              low: parseFloat(kline.l),
+              close: newPrice,
+              volume: newVolume
+            };
+            candlesDataRef.current.push(currentCandle);
+            if (candlesDataRef.current.length > 200) {
+              candlesDataRef.current.shift();
+            }
+          } else {
+            // Update existing candle
+            currentCandle.open = parseFloat(kline.o);
+            currentCandle.high = parseFloat(kline.h);
+            currentCandle.low = parseFloat(kline.l);
+            currentCandle.close = newPrice;
+            currentCandle.volume = newVolume;
+            candlesDataRef.current[candlesDataRef.current.length - 1] = currentCandle;
+          }
+
+          // Update Chart Series
+          candleSeries.update(currentCandle);
+          volumeSeries.update({
+            time: currentCandle.time,
+            value: currentCandle.volume,
+            color: currentCandle.close >= currentCandle.open ? '#10B981' : '#EF4444',
+          });
+
+          // Update SMAs
+          const currentData = candlesDataRef.current;
+          if (currentData.length >= 5) {
+            const slice5 = currentData.slice(-5);
+            const sum5 = slice5.reduce((acc, curr) => acc + curr.close, 0);
+            sma5Series.update({ time: currentCandle.time, value: sum5 / 5 });
+          }
+          if (currentData.length >= 10) {
+            const slice10 = currentData.slice(-10);
+            const sum10 = slice10.reduce((acc, curr) => acc + curr.close, 0);
+            sma10Series.update({ time: currentCandle.time, value: sum10 / 10 });
+          }
+
+          // Update Sentiment and Price
+          setSentiment(calculateSentiment(currentData));
+          
+          setCurrentPrice(newPrice);
+          if (lastPriceRef.current !== null) {
+            if (newPrice > lastPriceRef.current) {
+              setPriceColor('text-emerald-500');
+              if (colorTimeoutRef.current) clearTimeout(colorTimeoutRef.current);
+              colorTimeoutRef.current = setTimeout(() => setPriceColor('text-white'), 1000);
+            } else if (newPrice < lastPriceRef.current) {
+              setPriceColor('text-rose-500');
+              if (colorTimeoutRef.current) clearTimeout(colorTimeoutRef.current);
+              colorTimeoutRef.current = setTimeout(() => setPriceColor('text-white'), 1000);
+            }
+          }
+          lastPriceRef.current = newPrice;
         };
-        candlesDataRef.current.push(currentCandle);
-        if (candlesDataRef.current.length > 200) {
-          candlesDataRef.current.shift();
-        }
-      } else {
-        // Update existing candle
-        currentCandle.close = newPrice;
-        currentCandle.high = Math.max(currentCandle.high, newPrice);
-        currentCandle.low = Math.min(currentCandle.low, newPrice);
-        currentCandle.volume += newVolume;
-        candlesDataRef.current[candlesDataRef.current.length - 1] = currentCandle;
-      }
 
-      // Update Chart Series
-      candleSeries.update(currentCandle);
-      volumeSeries.update({
-        time: currentCandle.time,
-        value: currentCandle.volume,
-        color: currentCandle.close >= currentCandle.open ? '#10B981' : '#EF4444',
-      });
-
-      // Update SMAs
-      const currentData = candlesDataRef.current;
-      if (currentData.length >= 5) {
-        const slice5 = currentData.slice(-5);
-        const sum5 = slice5.reduce((acc, curr) => acc + curr.close, 0);
-        sma5Series.update({ time: currentCandle.time, value: sum5 / 5 });
+        ws.onerror = (err) => {
+          console.error('Binance WebSocket Error:', err);
+        };
+      } catch (error) {
+        console.error("Failed to initialize chart:", error);
       }
-      if (currentData.length >= 10) {
-        const slice10 = currentData.slice(-10);
-        const sum10 = slice10.reduce((acc, curr) => acc + curr.close, 0);
-        sma10Series.update({ time: currentCandle.time, value: sum10 / 10 });
-      }
+    };
 
-      // Update Sentiment and Price
-      setSentiment(calculateSentiment(currentData));
-      
-      setCurrentPrice(newPrice);
-      if (lastPriceRef.current !== null) {
-        if (newPrice > lastPriceRef.current) {
-          setPriceColor('text-emerald-500');
-        } else if (newPrice < lastPriceRef.current) {
-          setPriceColor('text-rose-500');
-        }
-      }
-      lastPriceRef.current = newPrice;
-
-    }, 1000);
+    initializeChart();
 
     const handleResize = () => {
       if (chartContainerRef.current) {
@@ -272,7 +277,12 @@ export const ChartComponent: React.FC<ChartComponentProps> = () => {
     window.addEventListener('resize', handleResize);
 
     return () => {
-      clearInterval(intervalId);
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      if (colorTimeoutRef.current) {
+        clearTimeout(colorTimeoutRef.current);
+      }
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
@@ -284,7 +294,7 @@ export const ChartComponent: React.FC<ChartComponentProps> = () => {
       
       {/* Current Price Overlay */}
       {currentPrice !== null && (
-        <div className={`absolute top-4 right-16 z-20 text-xl font-bold font-mono ${priceColor} bg-[#1A0B2E]/80 px-2 rounded shadow-sm border border-purple-500/20`}>
+        <div id="current-price" className={`absolute top-4 right-16 z-20 text-xl font-bold font-mono ${priceColor} bg-[#1A0B2E]/80 px-2 rounded shadow-sm border border-purple-500/20`}>
           {currentPrice.toFixed(2)}
         </div>
       )}

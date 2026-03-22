@@ -20,8 +20,7 @@ export interface GameState {
 // Sound Assets (Public URLs)
 export const SOUNDS = {
   CLICK: 'https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3',
-  WIN: 'https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3', // Winning chimes
-  LOSS: 'https://assets.mixkit.co/active_storage/sfx/2049/2049-preview.mp3', // Retro fail
+  WIN: 'https://tiengdong.com/wp-content/uploads/Am-thanh-tinh-tien-edit-video-www_tiengdong_com.mp3', // Cha-ching / Coin drop from tiengdong.com
 };
 
 // Helper to get Vietnam Time

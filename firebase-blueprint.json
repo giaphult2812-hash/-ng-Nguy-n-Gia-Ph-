@@ -1,0 +1,71 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and balances",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User ID" },
+        "email": { "type": "string", "format": "email" },
+        "nickname": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "avatarUrl": { "type": "string", "format": "uri" },
+        "referral": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "realBalance": { "type": "number" },
+        "usdtBalance": { "type": "number" },
+        "demoBalance": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role", "realBalance", "usdtBalance", "demoBalance", "createdAt"]
+    },
+    "Bet": {
+      "title": "Bet",
+      "description": "Trading bet history",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "amount": { "type": "number" },
+        "asset": { "type": "string" },
+        "prediction": { "type": "string", "enum": ["UP", "DOWN"] },
+        "entryPrice": { "type": "number" },
+        "exitPrice": { "type": "number" },
+        "status": { "type": "string", "enum": ["PENDING", "WIN", "LOSS", "TIE"] },
+        "payout": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "amount", "asset", "prediction", "entryPrice", "status", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "User notifications for transactions and events",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The user receiving the notification" },
+        "type": { "type": "string", "description": "Type of notification (e.g., 'Nhận tiền nội bộ', 'Nạp tiền')" },
+        "from": { "type": "string", "description": "Sender nickname or system" },
+        "to": { "type": "string", "description": "Receiver nickname or wallet" },
+        "amount": { "type": "number", "description": "Transaction amount" },
+        "read": { "type": "boolean", "description": "Whether the notification has been read" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "type", "from", "to", "amount", "read", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Stores user profiles and balances"
+    },
+    "/bets/{betId}": {
+      "schema": { "$ref": "#/entities/Bet" },
+      "description": "Stores all trading bets"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Stores user notifications"
+    }
+  }
+}

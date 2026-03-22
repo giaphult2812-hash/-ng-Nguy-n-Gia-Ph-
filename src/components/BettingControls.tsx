@@ -26,7 +26,7 @@ export const BettingControls: React.FC<BettingControlsProps> = ({
   const handleDecrement = () => setBetAmount(prev => Math.max(1, prev - 5));
 
   return (
-    <div className="w-full bg-[#130720] border-t border-purple-500/20 p-4 pb-6 shadow-[0_-8px_30px_-5px_rgba(0,0,0,0.3)] relative z-20">
+    <div className="w-full h-full bg-[#130720] border-t lg:border-t-0 border-purple-500/20 p-4 pb-6 lg:p-6 shadow-[0_-8px_30px_-5px_rgba(0,0,0,0.3)] lg:shadow-none relative z-20 flex flex-col justify-center">
       {/* Profit Info */}
       <div className="flex justify-center items-center gap-2 mb-3 text-xs px-2">
         <span className="text-slate-400 font-bold tracking-wide uppercase text-[10px] shrink-0">Lợi nhuận</span>
@@ -66,14 +66,17 @@ export const BettingControls: React.FC<BettingControlsProps> = ({
         <button
           onClick={() => onBet('DOWN')}
           disabled={isLocked}
-          className={`flex-1 rounded-2xl flex items-center justify-center gap-2 font-black text-white transition-all text-xl relative overflow-hidden shadow-md group border-2
+          className={`flex-1 rounded-2xl flex items-center justify-center gap-2 font-black text-white transition-all duration-300 text-xl relative overflow-hidden shadow-lg group border-2
             ${isLocked 
               ? 'bg-[#1A0B2E] border-slate-700 text-slate-500 cursor-not-allowed' 
-              : 'bg-rose-600 border-rose-600 hover:bg-rose-500 hover:border-rose-500 active:scale-[0.98]'
+              : 'bg-gradient-to-b from-rose-500 to-rose-600 border-rose-500/50 hover:from-rose-400 hover:to-rose-500 hover:border-rose-400 hover:shadow-[0_0_20px_rgba(225,29,72,0.5)] active:scale-[0.98] hover:-translate-y-0.5'
             }`}
         >
-          <span className="z-10">BÁN</span>
-          <TrendingDown className={`w-6 h-6 z-10 ${isLocked ? 'text-slate-500' : 'text-white'}`} strokeWidth={3} />
+          {!isLocked && (
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-[150%] group-hover:translate-x-[150%] transition-transform duration-700 ease-in-out z-0" />
+          )}
+          <span className="z-10 relative">BÁN</span>
+          <TrendingDown className={`w-6 h-6 z-10 relative ${isLocked ? 'text-slate-500' : 'text-white'}`} strokeWidth={3} />
           
           {currentBets.DOWN > 0 && (
             <div className="absolute top-1.5 right-2.5 text-[10px] bg-white/20 px-2 py-0.5 rounded-md text-white font-bold backdrop-blur-sm border border-white/30 z-20">
@@ -95,14 +98,17 @@ export const BettingControls: React.FC<BettingControlsProps> = ({
         <button
           onClick={() => onBet('UP')}
           disabled={isLocked}
-          className={`flex-1 rounded-2xl flex items-center justify-center gap-2 font-black text-white transition-all text-xl relative overflow-hidden shadow-md group border-2
+          className={`flex-1 rounded-2xl flex items-center justify-center gap-2 font-black text-white transition-all duration-300 text-xl relative overflow-hidden shadow-lg group border-2
             ${isLocked 
               ? 'bg-[#1A0B2E] border-slate-700 text-slate-500 cursor-not-allowed' 
-              : 'bg-emerald-600 border-emerald-600 hover:bg-emerald-500 hover:border-emerald-500 active:scale-[0.98]'
+              : 'bg-gradient-to-b from-emerald-500 to-emerald-600 border-emerald-500/50 hover:from-emerald-400 hover:to-emerald-500 hover:border-emerald-400 hover:shadow-[0_0_20px_rgba(16,185,129,0.5)] active:scale-[0.98] hover:-translate-y-0.5'
             }`}
         >
-          <span className="z-10">MUA</span>
-          <TrendingUp className={`w-6 h-6 z-10 ${isLocked ? 'text-slate-500' : 'text-white'}`} strokeWidth={3} />
+          {!isLocked && (
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-[150%] group-hover:translate-x-[150%] transition-transform duration-700 ease-in-out z-0" />
+          )}
+          <span className="z-10 relative">MUA</span>
+          <TrendingUp className={`w-6 h-6 z-10 relative ${isLocked ? 'text-slate-500' : 'text-white'}`} strokeWidth={3} />
           
           {currentBets.UP > 0 && (
             <div className="absolute top-1.5 right-2.5 text-[10px] bg-white/20 px-2 py-0.5 rounded-md text-white font-bold backdrop-blur-sm border border-white/30 z-20">

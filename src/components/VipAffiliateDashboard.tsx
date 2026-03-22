@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { Copy, Users, CheckCircle2, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { db } from '../firebase';
+import { collection, addDoc, runTransaction, doc, increment, query, where, getDocs } from 'firebase/firestore';
 
 interface VipAffiliateDashboardProps {
   realBalance: number;
   setRealBalance: (amount: number | ((prev: number) => number)) => void;
+  userProfile?: any;
 }
 
 interface VipData {
@@ -12,31 +15,40 @@ interface VipData {
   referralCode: string;
 }
 
-export const VipAffiliateDashboard: React.FC<VipAffiliateDashboardProps> = ({ realBalance, setRealBalance }) => {
-  const [vipData, setVipData] = useState<VipData>({
-    isVIP: false,
-    referralCode: '',
-  });
+export const VipAffiliateDashboard: React.FC<VipAffiliateDashboardProps> = ({ realBalance, setRealBalance, userProfile }) => {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [referredCount, setReferredCount] = useState(0);
+  const [commissionEarned, setCommissionEarned] = useState(0);
 
-  // Load VIP data from localStorage
+  const isVIP = userProfile?.isVIP || false;
+  const referralCode = userProfile?.referralCode || '';
+
   useEffect(() => {
-    const storedData = localStorage.getItem('futureAlpha_vipData');
-    if (storedData) {
-      try {
-        setVipData(JSON.parse(storedData));
-      } catch (e) {
-        console.error('Failed to parse VIP data', e);
+    const fetchAffiliateData = async () => {
+      if (isVIP && referralCode && userProfile?.uid) {
+        try {
+          // Fetch referred users count
+          const usersRef = collection(db, 'users');
+          const qUsers = query(usersRef, where('referral', '==', referralCode));
+          const usersSnap = await getDocs(qUsers);
+          setReferredCount(usersSnap.size);
+
+          // Fetch total commission earned
+          const notifRef = collection(db, 'notifications');
+          const qNotif = query(notifRef, where('userId', '==', userProfile.uid), where('type', '==', 'Hoa hồng VIP'));
+          const notifSnap = await getDocs(qNotif);
+          let total = 0;
+          notifSnap.forEach(doc => {
+            total += doc.data().amount || 0;
+          });
+          setCommissionEarned(total);
+        } catch (error) {
+          console.error("Error fetching affiliate data:", error);
+        }
       }
-    }
-  }, []);
-
-  // Save VIP data to localStorage whenever it changes
-  useEffect(() => {
-    if (vipData.isVIP || vipData.referralCode) {
-      localStorage.setItem('futureAlpha_vipData', JSON.stringify(vipData));
-    }
-  }, [vipData]);
+    };
+    fetchAffiliateData();
+  }, [isVIP, referralCode, userProfile?.uid]);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -52,21 +64,56 @@ export const VipAffiliateDashboard: React.FC<VipAffiliateDashboardProps> = ({ re
     return result;
   };
 
-  const handleBuyVIP = () => {
+  const handleBuyVIP = async () => {
     if (realBalance >= 100) {
-      setRealBalance((prev) => prev - 100);
-      setVipData({
-        isVIP: true,
-        referralCode: generateCode(),
-      });
-      showToast('Nâng cấp VIP thành công!');
+      if (userProfile?.uid) {
+        try {
+          const newCode = generateCode();
+          
+          await runTransaction(db, async (transaction) => {
+            const userRef = doc(db, 'users', userProfile.uid);
+            const userDocSnap = await transaction.get(userRef);
+            
+            if (!userDocSnap.exists()) {
+              throw new Error("Không tìm thấy thông tin người dùng");
+            }
+
+            const currentReal = userDocSnap.data().realBalance || 0;
+            if (currentReal < 100) {
+              throw new Error("Số dư Thực không đủ");
+            }
+
+            transaction.update(userRef, {
+              realBalance: increment(-100),
+              isVIP: true,
+              referralCode: newCode
+            });
+          });
+
+          setRealBalance((prev) => prev - 100);
+          showToast('Nâng cấp VIP thành công!');
+          
+          await addDoc(collection(db, 'notifications'), {
+            userId: userProfile.uid,
+            type: 'Mua VIP',
+            from: 'Ví Thực',
+            to: 'Hệ Thống',
+            amount: -100,
+            read: false,
+            createdAt: new Date().toISOString()
+          });
+        } catch (error: any) {
+          console.error("Error buying VIP:", error);
+          showToast(error.message || "Có lỗi xảy ra khi mua VIP", 'error');
+        }
+      }
     } else {
       showToast('Số dư không đủ!', 'error');
     }
   };
 
   const handleCopy = async (text: string) => {
-    if (!vipData.isVIP) return;
+    if (!isVIP) return;
     try {
       await navigator.clipboard.writeText(text);
       showToast('Đã sao chép');
@@ -75,8 +122,8 @@ export const VipAffiliateDashboard: React.FC<VipAffiliateDashboardProps> = ({ re
     }
   };
 
-  const affiliateLink = `https://futurealpha.net/signup/${vipData.referralCode || 'XXXXXX'}`;
-  const displayCode = vipData.referralCode || 'XXXXXX';
+  const affiliateLink = `${window.location.origin}?ref=${referralCode || 'XXXXXX'}`;
+  const displayCode = referralCode || 'XXXXXX';
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-[#0F0518] overflow-y-auto">
@@ -87,19 +134,20 @@ export const VipAffiliateDashboard: React.FC<VipAffiliateDashboardProps> = ({ re
         </h1>
 
         {/* Action Button (Conditional) */}
-        {!vipData.isVIP && (
+        {!isVIP && (
           <button
             onClick={handleBuyVIP}
-            className="w-full sm:w-auto mb-8 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold py-3.5 px-8 rounded-xl shadow-[0_0_20px_rgba(139,92,246,0.4)] transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+            className="w-full sm:w-auto mb-8 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold py-3.5 px-8 rounded-xl shadow-[0_0_20px_rgba(139,92,246,0.4)] hover:shadow-[0_0_30px_rgba(139,92,246,0.6)] transition-all duration-300 active:scale-[0.98] flex items-center justify-center gap-2 relative overflow-hidden group hover:-translate-y-0.5"
           >
-            Mua ngay $100
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-[150%] group-hover:translate-x-[150%] transition-transform duration-700 ease-in-out z-0" />
+            <span className="relative z-10">Mua ngay $100</span>
           </button>
         )}
 
         {/* Affiliate Box */}
         <div className="relative mb-8">
           {/* Blur Overlay if not VIP */}
-          {!vipData.isVIP && (
+          {!isVIP && (
             <div className="absolute inset-0 z-10 backdrop-blur-[3px] bg-[#0F0518]/40 rounded-2xl flex items-center justify-center border border-purple-500/20">
               <div className="bg-[#131722]/90 px-4 py-2 rounded-lg border border-purple-500/30 text-purple-300 text-sm font-medium shadow-xl flex items-center gap-2">
                 <AlertCircle className="w-4 h-4" />
@@ -108,7 +156,7 @@ export const VipAffiliateDashboard: React.FC<VipAffiliateDashboardProps> = ({ re
             </div>
           )}
 
-          <div className={`bg-[#131722] border border-purple-500/40 rounded-2xl p-5 shadow-[0_8px_30px_rgba(0,0,0,0.4)] transition-all duration-500 ${!vipData.isVIP ? 'opacity-60 grayscale-[0.3]' : 'shadow-[0_0_30px_rgba(139,92,246,0.15)]'}`}>
+          <div className={`bg-[#131722] border border-purple-500/40 rounded-2xl p-5 shadow-[0_8px_30px_rgba(0,0,0,0.4)] transition-all duration-500 ${!isVIP ? 'opacity-60 grayscale-[0.3]' : 'shadow-[0_0_30px_rgba(139,92,246,0.15)]'}`}>
             
             {/* Input Group 1: Link */}
             <div className="mb-5">
@@ -122,7 +170,7 @@ export const VipAffiliateDashboard: React.FC<VipAffiliateDashboardProps> = ({ re
                 />
                 <button
                   onClick={() => handleCopy(affiliateLink)}
-                  disabled={!vipData.isVIP}
+                  disabled={!isVIP}
                   className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white px-5 font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                 >
                   Sao chép
@@ -142,7 +190,7 @@ export const VipAffiliateDashboard: React.FC<VipAffiliateDashboardProps> = ({ re
                 />
                 <button
                   onClick={() => handleCopy(displayCode)}
-                  disabled={!vipData.isVIP}
+                  disabled={!isVIP}
                   className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white px-5 font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                 >
                   Sao chép
@@ -153,21 +201,40 @@ export const VipAffiliateDashboard: React.FC<VipAffiliateDashboardProps> = ({ re
         </div>
 
         {/* Stats Area */}
-        <div className="bg-[#131722] rounded-2xl p-5 border border-slate-800 flex gap-4 items-start">
-          <div className="relative shrink-0 mt-1">
-            <div className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center border border-slate-700">
-              <Users className="w-6 h-6 text-slate-400" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="bg-[#131722] rounded-2xl p-5 border border-slate-800 flex gap-4 items-start">
+            <div className="relative shrink-0 mt-1">
+              <div className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center border border-slate-700">
+                <Users className="w-6 h-6 text-slate-400" />
+              </div>
+              {/* Badge */}
+              <div className="absolute -top-1 -right-1 bg-purple-600 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border-2 border-[#131722]">
+                {referredCount}
+              </div>
             </div>
-            {/* Badge */}
-            <div className="absolute -top-1 -right-1 bg-purple-600 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border-2 border-[#131722]">
-              2
+            <div>
+              <h3 className="text-white font-medium text-base mb-1">Bạn bè đăng kí</h3>
+              <p className="text-slate-400 text-sm leading-relaxed">
+                Bạn bè của bạn chấp nhận lời mời, hoàn thành đăng kí và sử dụng
+              </p>
             </div>
           </div>
-          <div>
-            <h3 className="text-white font-medium text-base mb-1">Bạn bè đăng kí</h3>
-            <p className="text-slate-400 text-sm leading-relaxed">
-              Bạn bè của bạn chấp nhận lời mời, hoàn thành đăng kí và sử dụng
-            </p>
+
+          <div className="bg-[#131722] rounded-2xl p-5 border border-slate-800 flex gap-4 items-start">
+            <div className="relative shrink-0 mt-1">
+              <div className="w-12 h-12 bg-emerald-500/10 rounded-full flex items-center justify-center border border-emerald-500/20">
+                <span className="text-emerald-500 font-bold text-lg">$</span>
+              </div>
+            </div>
+            <div>
+              <h3 className="text-white font-medium text-base mb-1">Hoa hồng nhận được</h3>
+              <p className="text-emerald-400 text-xl font-bold mt-2">
+                ${commissionEarned.toFixed(4)}
+              </p>
+              <p className="text-slate-500 text-xs mt-1">
+                Từ 0.01% lợi nhuận của cấp dưới
+              </p>
+            </div>
           </div>
         </div>
       </div>

@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { User, Eye, EyeOff, Camera, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { db, auth } from '../firebase';
+import { doc, updateDoc } from 'firebase/firestore';
 
 interface UserProfileData {
   email: string;
@@ -9,30 +11,33 @@ interface UserProfileData {
   lastName: string;
   password: string;
   avatarUrl: string | null;
+  referral?: string;
 }
 
-export const UserProfile: React.FC = () => {
-  const [profileData, setProfileData] = useState<UserProfileData>({
-    email: 'giaphult2812@gmail.com',
-    nickname: 'Giaphu2009',
+interface Props {
+  userProfile: UserProfileData;
+  setUserProfile: (profile: UserProfileData) => void;
+  onLogout: () => void;
+}
+
+export const UserProfile: React.FC<Props> = ({ userProfile, setUserProfile, onLogout }) => {
+  const [profileData, setProfileData] = useState<UserProfileData>(userProfile || {
+    email: '',
+    nickname: '',
     firstName: '',
     lastName: '',
     password: '',
     avatarUrl: null,
+    referral: ''
   });
   const [showPassword, setShowPassword] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   useEffect(() => {
-    const storedData = localStorage.getItem('futureAlpha_userProfile');
-    if (storedData) {
-      try {
-        setProfileData(JSON.parse(storedData));
-      } catch (e) {
-        console.error('Failed to parse user profile data', e);
-      }
+    if (userProfile) {
+      setProfileData(userProfile);
     }
-  }, []);
+  }, [userProfile]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -44,8 +49,36 @@ export const UserProfile: React.FC = () => {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const handleUpdate = () => {
+  const handleUpdate = async () => {
     localStorage.setItem('futureAlpha_userProfile', JSON.stringify(profileData));
+    
+    // Update in users array
+    const usersStr = localStorage.getItem('futureAlpha_users');
+    if (usersStr) {
+      try {
+        const users = JSON.parse(usersStr);
+        const updatedUsers = users.map((u: any) => u.email === profileData.email ? profileData : u);
+        localStorage.setItem('futureAlpha_users', JSON.stringify(updatedUsers));
+      } catch (e) {
+        console.error('Failed to update users array', e);
+      }
+    }
+
+    // Update in Firestore
+    if (auth.currentUser && profileData.uid) {
+      try {
+        await updateDoc(doc(db, 'users', profileData.uid), {
+          nickname: profileData.nickname,
+          firstName: profileData.firstName,
+          lastName: profileData.lastName,
+          avatarUrl: profileData.avatarUrl
+        });
+      } catch (error) {
+        console.error("Error updating profile in Firestore:", error);
+      }
+    }
+
+    setUserProfile(profileData);
     showToast('Cập nhật tài khoản thành công!');
   };
 
@@ -135,6 +168,19 @@ export const UserProfile: React.FC = () => {
                 />
               </div>
 
+              {/* Referral Code */}
+              <div>
+                <label className="block text-sm text-slate-400 mb-1.5 font-medium">Mã giới thiệu (nếu có)</label>
+                <input
+                  type="text"
+                  name="referral"
+                  value={profileData.referral || ''}
+                  onChange={handleInputChange}
+                  className="w-full bg-[#1E2329] border border-[#2A2E39] rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:border-purple-500/50 transition-colors"
+                  placeholder="Nhập mã giới thiệu"
+                />
+              </div>
+
               {/* Password */}
               <div>
                 <label className="block text-sm text-slate-400 mb-1.5 font-medium">Mật khẩu</label>
@@ -159,12 +205,26 @@ export const UserProfile: React.FC = () => {
             </div>
 
             {/* Submit Button */}
-            <div className="pt-2">
+            <div className="pt-2 flex flex-col sm:flex-row gap-3">
               <button
                 onClick={handleUpdate}
-                className="w-full sm:w-auto bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold py-3.5 px-8 rounded-xl shadow-[0_0_20px_rgba(139,92,246,0.4)] transition-all active:scale-[0.98]"
+                className="w-full sm:flex-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold py-3.5 px-8 rounded-xl shadow-[0_0_20px_rgba(139,92,246,0.4)] transition-all active:scale-[0.98]"
               >
                 Cập nhật Tài khoản
+              </button>
+              <button
+                onClick={() => {
+                  import('../firebase').then(({ auth }) => {
+                    auth.signOut().then(() => {
+                      localStorage.removeItem('futureAlpha_userProfile');
+                      localStorage.removeItem('futurealpha_user');
+                      onLogout();
+                    });
+                  });
+                }}
+                className="w-full sm:w-auto bg-[#1E2329] hover:bg-rose-500/20 text-rose-500 border border-rose-500/20 hover:border-rose-500/50 font-semibold py-3.5 px-8 rounded-xl transition-all active:scale-[0.98]"
+              >
+                Đăng xuất
               </button>
             </div>
           </div>

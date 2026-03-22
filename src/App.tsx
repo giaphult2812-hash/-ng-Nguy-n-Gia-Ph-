@@ -5,15 +5,27 @@ import { BettingControls } from './components/BettingControls';
 import { ChartComponent } from './components/ChartComponent';
 import { WinModal } from './components/WinModal';
 import { SidebarMenu } from './components/SidebarMenu';
+import { NotificationPanel } from './components/NotificationPanel';
 import { StreakChallenge } from './components/StreakChallenge';
 import { VipAffiliateDashboard } from './components/VipAffiliateDashboard';
 import { UserProfile } from './components/UserProfile';
 import { DashboardStats } from './components/DashboardStats';
 import { FutureAlphaAuth } from './components/FutureAlphaAuth';
-import { Bell, Menu, ChevronDown, Gift, CheckCircle, RefreshCw, ArrowLeftRight } from 'lucide-react';
+import { AdminDashboard } from './components/AdminDashboard';
+import { NotificationBox } from './components/NotificationBox';
+import { auth, db } from './firebase';
+import { onAuthStateChanged, sendEmailVerification } from 'firebase/auth';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { Bell, Menu, ChevronDown, Gift, CheckCircle, RefreshCw, ArrowLeftRight, Bot, Settings, Mail, Layers, Share2, Rocket, User, LayoutDashboard, ShieldCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [isAccountDropdownOpen, setIsAccountDropdownOpen] = useState(false);
+  const [isEmailVerified, setIsEmailVerified] = useState(true);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
   const {
     time,
     grid,
@@ -27,6 +39,7 @@ export default function App() {
     accountType,
     switchAccount,
     resetDemoBalance,
+    resetRealBalance,
     betAmount,
     setBetAmount,
     currentBets,
@@ -36,14 +49,82 @@ export default function App() {
     setNotification,
     betHistory,
     jackpotPool
-  } = useGameLogic();
+  } = useGameLogic(userProfile);
 
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isAccountDropdownOpen, setIsAccountDropdownOpen] = useState(false);
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setCurrentUser(user);
+        // Bỏ qua bước xác thực email, luôn cho phép truy cập
+        setIsEmailVerified(true);
+      } else {
+        setCurrentUser(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Sync user profile from Firestore
+  useEffect(() => {
+    if (currentUser?.uid) {
+      const unsubscribe = onSnapshot(doc(db, 'users', currentUser.uid), (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const updatedProfile: any = { ...data, uid: currentUser.uid, email: currentUser.email };
+          
+          if (currentUser.email === 'giaphult2812@gmail.com' && updatedProfile.role !== 'admin') {
+            updatedProfile.role = 'admin';
+          }
+          
+          setUserProfile(updatedProfile);
+          localStorage.setItem('futureAlpha_userProfile', JSON.stringify(updatedProfile));
+          
+          // Update balances from Firestore
+          if (updatedProfile.usdtBalance !== undefined) {
+            setUsdtBalance(updatedProfile.usdtBalance);
+            localStorage.setItem(`futureAlpha_usdtBalance_${currentUser.uid}`, updatedProfile.usdtBalance.toString());
+          }
+          if (updatedProfile.realBalance !== undefined) {
+            setRealBalance(updatedProfile.realBalance);
+            localStorage.setItem(`futureAlpha_realBalance_${currentUser.uid}`, updatedProfile.realBalance.toString());
+          }
+        }
+      }, (error) => {
+        console.error("Error fetching user profile:", error);
+      });
+      return () => unsubscribe();
+    }
+  }, [currentUser, setUsdtBalance, setRealBalance]);
+
+  useEffect(() => {
+    const storedProfile = localStorage.getItem('futureAlpha_userProfile');
+    if (storedProfile) {
+      try {
+        setUserProfile(JSON.parse(storedProfile));
+        setIsAuthenticated(true);
+      } catch (e) {
+        console.error('Failed to parse user profile', e);
+      }
+    } else {
+      const oldProfile = localStorage.getItem('futurealpha_user');
+      if (oldProfile) {
+        try {
+          const parsedOld = JSON.parse(oldProfile);
+          const migrated = { ...parsedOld, referral: '', firstName: '', lastName: '', avatarUrl: null };
+          localStorage.setItem('futureAlpha_userProfile', JSON.stringify(migrated));
+          setUserProfile(migrated);
+          setIsAuthenticated(true);
+        } catch (e) {
+          console.error('Failed to migrate old user profile', e);
+        }
+      }
+    }
+  }, []);
   const [showWinModal, setShowWinModal] = useState(false);
   const [winAmount, setWinAmount] = useState(0);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [activePage, setActivePage] = useState<'TRADE' | 'STREAK_CHALLENGE' | 'VIP_AFFILIATE' | 'PROFILE' | 'DASHBOARD'>('TRADE');
+  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+  const [activePage, setActivePage] = useState<'TRADE' | 'STREAK_CHALLENGE' | 'VIP_AFFILIATE' | 'PROFILE' | 'DASHBOARD' | 'BOT' | 'SETTINGS' | 'ADMIN'>('TRADE');
 
   // Calculate seconds left in current phase
   const currentSecond = time.getSeconds();
@@ -77,13 +158,62 @@ export default function App() {
 
   return (
     <>
-      {!isAuthenticated && <FutureAlphaAuth onAuthenticated={() => setIsAuthenticated(true)} />}
-      
-      <div 
-        className="h-screen w-full bg-black flex items-center justify-center overflow-hidden selection:bg-purple-500/30"
-        style={{ display: isAuthenticated ? 'flex' : 'none' }}
-      >
-        <div className="w-full h-full sm:max-w-[430px] sm:h-[90vh] sm:rounded-[2.5rem] sm:border-[8px] sm:border-[#1E2329] bg-[#0F0518] text-slate-200 font-sans flex flex-col overflow-hidden relative shadow-2xl">
+      {!isAuthenticated ? (
+        <FutureAlphaAuth onAuthenticated={(profile) => {
+          setUserProfile(profile);
+          setIsAuthenticated(true);
+        }} />
+      ) : !isEmailVerified ? (
+        <div className="h-screen w-full bg-[#0F0518] flex flex-col items-center justify-center text-center p-6 font-sans">
+          <div className="w-24 h-24 bg-purple-500/10 rounded-full flex items-center justify-center mb-6">
+            <Mail className="w-12 h-12 text-purple-500" />
+          </div>
+          <h1 className="text-3xl font-bold text-white mb-4">Xác thực Email</h1>
+          <p className="text-gray-400 max-w-md mb-8 text-lg">
+            Vui lòng kiểm tra email của bạn và bấm vào liên kết xác nhận để kích hoạt tài khoản.
+          </p>
+          <button 
+            onClick={async () => {
+              if (currentUser) {
+                try {
+                  await sendEmailVerification(currentUser);
+                  alert('Đã gửi lại email xác nhận!');
+                } catch (e: any) {
+                  alert('Lỗi: ' + e.message);
+                }
+              }
+            }}
+            className="bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg py-3 px-8 transition-colors text-lg shadow-[0_0_15px_rgba(147,51,234,0.3)] mb-4"
+          >
+            Gửi lại Email
+          </button>
+          
+          <button 
+            onClick={() => {
+              // Bypass verification for testing
+              setIsEmailVerified(true);
+            }}
+            className="bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-500 font-bold rounded-lg py-3 px-8 transition-colors text-lg border border-emerald-500/30 mb-4"
+          >
+            Bỏ qua xác thực (Dành cho Test)
+          </button>
+
+          <button 
+            onClick={() => {
+              auth.signOut();
+              localStorage.removeItem('futureAlpha_userProfile');
+              localStorage.removeItem('futurealpha_user');
+              setIsAuthenticated(false);
+              setUserProfile(null);
+            }}
+            className="text-purple-400 hover:text-purple-300 transition-colors"
+          >
+            Quay lại Đăng nhập
+          </button>
+        </div>
+      ) : (
+        <div className="h-screen w-full bg-[#0F0518] flex items-center justify-center overflow-hidden selection:bg-purple-500/30 font-sans text-slate-200">
+          <div className="w-full h-full flex flex-col overflow-hidden relative">
         <SidebarMenu 
           isOpen={isSidebarOpen} 
           onClose={() => setIsSidebarOpen(false)} 
@@ -94,6 +224,11 @@ export default function App() {
           setUsdtBalance={setUsdtBalance}
           setActivePage={setActivePage}
           activePage={activePage}
+          userProfile={userProfile}
+        />
+        <NotificationPanel 
+          isOpen={isNotificationOpen} 
+          onClose={() => setIsNotificationOpen(false)} 
         />
         <WinModal 
           isOpen={showWinModal} 
@@ -230,9 +365,22 @@ export default function App() {
                           <span className="text-lg font-bold text-white">${realBalance.toFixed(2)}</span>
                         </div>
                       </div>
-                      <button className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors">
-                        <ArrowLeftRight className="w-4 h-4 text-emerald-500" />
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {userProfile?.role === 'admin' && (
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              resetRealBalance();
+                            }}
+                            className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors"
+                          >
+                            <RefreshCw className="w-4 h-4 text-emerald-500" />
+                          </button>
+                        )}
+                        <button className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors">
+                          <ArrowLeftRight className="w-4 h-4 text-emerald-500" />
+                        </button>
+                      </div>
                     </div>
 
                     {/* Demo Account Option */}
@@ -266,10 +414,8 @@ export default function App() {
             </AnimatePresence>
           </div>
 
-          {/* Bell Icon */}
-          <button className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center bg-[#1E2329] hover:bg-[#2A2F36] transition-colors rounded-lg border border-slate-700 text-slate-400 hover:text-white group shrink-0">
-            <Bell className="w-4 h-4 sm:w-5 sm:h-5 group-hover:drop-shadow-[0_0_5px_rgba(255,255,255,0.3)] transition-all" />
-          </button>
+          {/* Notification Box */}
+          <NotificationBox userId={userProfile?.uid} />
           
           {/* Menu Icon */}
           <button 
@@ -281,54 +427,160 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Content */}
-      {activePage === 'STREAK_CHALLENGE' ? (
+      {/* Main Content Area with Desktop Sidebar */}
+      <div className="flex-1 flex flex-row min-h-0 relative">
+        {/* Desktop Sidebar */}
+        <div className="hidden lg:flex flex-col w-[240px] bg-[#130720] border-r border-purple-500/20 z-20 shrink-0">
+          <div className="p-4 space-y-2 overflow-y-auto">
+            {/* Menu Items */}
+            <button 
+              onClick={() => setActivePage('TRADE')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activePage === 'TRADE' ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30' : 'text-slate-400 hover:bg-[#2A2E39] hover:text-slate-200'}`}
+            >
+              <Layers className="w-5 h-5" />
+              <span className="font-medium">Giao Dịch</span>
+            </button>
+            
+            <button 
+              onClick={() => setActivePage('BOT')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activePage === 'BOT' ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30' : 'text-slate-400 hover:bg-[#2A2E39] hover:text-slate-200'}`}
+            >
+              <Bot className="w-5 h-5" />
+              <span className="font-medium">Bot giao dịch</span>
+            </button>
+
+            <button 
+              onClick={() => setActivePage('VIP_AFFILIATE')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activePage === 'VIP_AFFILIATE' ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30' : 'text-slate-400 hover:bg-[#2A2E39] hover:text-slate-200'}`}
+            >
+              <Share2 className="w-5 h-5" />
+              <span className="font-medium">Thành Viên VIP</span>
+            </button>
+
+            <button 
+              onClick={() => setActivePage('STREAK_CHALLENGE')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activePage === 'STREAK_CHALLENGE' ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30' : 'text-slate-400 hover:bg-[#2A2E39] hover:text-slate-200'}`}
+            >
+              <Rocket className="w-5 h-5" />
+              <span className="font-medium">Streak Challenge</span>
+            </button>
+
+            <div className="h-px bg-purple-500/10 my-4"></div>
+
+            <button 
+              onClick={() => setActivePage('PROFILE')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activePage === 'PROFILE' ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30' : 'text-slate-400 hover:bg-[#2A2E39] hover:text-slate-200'}`}
+            >
+              <User className="w-5 h-5" />
+              <span className="font-medium">Hồ Sơ</span>
+            </button>
+
+            <button 
+              onClick={() => setActivePage('DASHBOARD')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activePage === 'DASHBOARD' ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30' : 'text-slate-400 hover:bg-[#2A2E39] hover:text-slate-200'}`}
+            >
+              <LayoutDashboard className="w-5 h-5" />
+              <span className="font-medium">Bảng Điều Khiển</span>
+            </button>
+
+            {userProfile?.role === 'admin' && (
+              <button 
+                onClick={() => setActivePage('ADMIN')}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activePage === 'ADMIN' ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30' : 'text-slate-400 hover:bg-[#2A2E39] hover:text-slate-200'}`}
+              >
+                <ShieldCheck className="w-5 h-5" />
+                <span className="font-medium">Admin Panel</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Main Routing Area */}
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
+          {activePage === 'STREAK_CHALLENGE' ? (
         <StreakChallenge onBackToTrade={() => setActivePage('TRADE')} jackpotPool={jackpotPool} />
       ) : activePage === 'VIP_AFFILIATE' ? (
-        <VipAffiliateDashboard realBalance={realBalance} setRealBalance={setRealBalance} />
+        <VipAffiliateDashboard realBalance={realBalance} setRealBalance={setRealBalance} userProfile={userProfile} />
       ) : activePage === 'PROFILE' ? (
-        <UserProfile />
+        <UserProfile 
+          userProfile={userProfile} 
+          setUserProfile={setUserProfile} 
+          onLogout={() => {
+            setIsAuthenticated(false);
+            setUserProfile(null);
+            setActivePage('TRADE');
+          }}
+        />
       ) : activePage === 'DASHBOARD' ? (
         <DashboardStats betHistory={betHistory} />
+      ) : activePage === 'BOT' ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+          <Bot className="w-16 h-16 text-purple-500 mb-4 opacity-50" />
+          <h2 className="text-2xl font-bold text-white mb-2">Bot Giao Dịch</h2>
+          <p className="text-slate-400">Tính năng đang được phát triển. Vui lòng quay lại sau!</p>
+          <button onClick={() => setActivePage('TRADE')} className="mt-6 bg-purple-600 hover:bg-purple-500 text-white px-6 py-2 rounded-lg transition-colors">Quay lại Giao dịch</button>
+        </div>
+      ) : activePage === 'ADMIN' && userProfile?.role === 'admin' ? (
+        <AdminDashboard onBack={() => setActivePage('TRADE')} />
+      ) : activePage === 'SETTINGS' ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+          <Settings className="w-16 h-16 text-purple-500 mb-4 opacity-50" />
+          <h2 className="text-2xl font-bold text-white mb-2">Cài Đặt</h2>
+          <p className="text-slate-400">Tính năng đang được phát triển. Vui lòng quay lại sau!</p>
+          <button onClick={() => setActivePage('TRADE')} className="mt-6 bg-purple-600 hover:bg-purple-500 text-white px-6 py-2 rounded-lg transition-colors">Quay lại Giao dịch</button>
+        </div>
       ) : (
-        <main className="flex-1 flex flex-col min-h-0 relative">
+        <main className="flex-1 flex flex-col lg:flex-row min-h-0 relative">
           {/* Background Gradient Mesh */}
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(124,58,237,0.1),transparent_50%)] pointer-events-none"></div>
 
-          {/* Chart Section - Flexible Height */}
-          <div className="relative flex-1 min-h-0 bg-[#0F0518] border-b border-purple-500/10">
-            <div className="absolute top-3 left-4 z-10 flex gap-2">
-              <div className="bg-[#2D1B4E]/80 backdrop-blur px-3 py-1 rounded-lg text-[10px] font-bold text-white flex items-center gap-1.5 border border-purple-500/20 shadow-lg">
-                <span className="text-amber-500 text-xs">₿</span> 
-                <span className="tracking-wider">BTC/USD</span>
+          {/* Left/Center Area: Chart + Grid */}
+          <div className="flex-1 flex flex-col min-w-0 relative z-10">
+            {/* Chart Section - Flexible Height */}
+            <div className="relative flex-1 min-h-0 bg-[#0F0518] border-b border-purple-500/10">
+              <div className="absolute top-3 left-4 z-10 flex gap-2">
+                <div className="bg-[#2D1B4E]/80 backdrop-blur px-3 py-1 rounded-lg text-[10px] font-bold text-white flex items-center gap-1.5 border border-purple-500/20 shadow-lg">
+                  <span className="text-amber-500 text-xs">₿</span> 
+                  <span className="tracking-wider">BTC/USD</span>
+                </div>
+              </div>
+              <ChartComponent data={[]} />
+            </div>
+
+            {/* Indicators Bar */}
+            <div className="h-9 bg-[#130720] flex items-center justify-between px-4 border-b border-purple-500/10 shrink-0 relative z-10">
+              <div className="flex gap-6 text-[10px] font-medium">
+                <span 
+                  onClick={() => setNotification({ type: 'info', message: 'Tính năng đang phát triển' })}
+                  className="text-purple-400/60 hover:text-purple-300 cursor-pointer transition-colors"
+                >
+                  Indicators
+                </span>
+                <span 
+                  onClick={() => setNotification({ type: 'info', message: 'Tính năng đang phát triển' })}
+                  className="text-purple-400 border-b-2 border-purple-500 pb-2.5 cursor-pointer"
+                >
+                  Last Results
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <div className="bg-[#2D1B4E] px-2 py-1 rounded-md text-[9px] text-emerald-400 flex items-center gap-1.5 border border-emerald-500/20">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.5)]"></span> 24
+                </div>
+                <div className="bg-[#2D1B4E] px-2 py-1 rounded-md text-[9px] text-rose-400 flex items-center gap-1.5 border border-rose-500/20">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_5px_rgba(244,63,94,0.5)]"></span> 33
+                </div>
               </div>
             </div>
-            <ChartComponent data={[]} />
-          </div>
 
-          {/* Indicators Bar */}
-          <div className="h-9 bg-[#130720] flex items-center justify-between px-4 border-b border-purple-500/10 shrink-0 relative z-10">
-            <div className="flex gap-6 text-[10px] font-medium">
-              <span className="text-purple-400/60 hover:text-purple-300 cursor-pointer transition-colors">Indicators</span>
-              <span className="text-purple-400 border-b-2 border-purple-500 pb-2.5">Last Results</span>
-            </div>
-            <div className="flex gap-2">
-              <div className="bg-[#2D1B4E] px-2 py-1 rounded-md text-[9px] text-emerald-400 flex items-center gap-1.5 border border-emerald-500/20">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.5)]"></span> 24
-              </div>
-              <div className="bg-[#2D1B4E] px-2 py-1 rounded-md text-[9px] text-rose-400 flex items-center gap-1.5 border border-rose-500/20">
-                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_5px_rgba(244,63,94,0.5)]"></span> 33
-              </div>
+            {/* Water Drop Grid - Fixed Height Container */}
+            <div className="h-[110px] sm:h-[130px] bg-[#0F0518] flex items-center justify-center shrink-0 border-b border-purple-500/10 relative z-10">
+              <WaterDropGrid grid={grid} activeDropIndex={currentIndex} />
             </div>
           </div>
 
-          {/* Water Drop Grid - Fixed Height Container */}
-          <div className="h-[110px] sm:h-[130px] bg-[#0F0518] flex items-center justify-center shrink-0 border-b border-purple-500/10 relative z-10">
-            <WaterDropGrid grid={grid} activeDropIndex={currentIndex} />
-          </div>
-
-          {/* Betting Controls - Fixed Height */}
-          <div className="shrink-0 relative z-20">
+          {/* Betting Controls - Fixed Height on Mobile, Fixed Width on Desktop */}
+          <div className="shrink-0 lg:w-[320px] xl:w-[380px] relative z-20 bg-[#130720] flex flex-col justify-center lg:border-l lg:border-purple-500/20">
             <BettingControls 
               phase={phase}
               balance={balance}
@@ -340,7 +592,9 @@ export default function App() {
             />
           </div>
         </main>
-      )}
+          )}
+        </div>
+      </div>
 
       {/* Notifications */}
       <AnimatePresence>
@@ -366,6 +620,7 @@ export default function App() {
       </AnimatePresence>
       </div>
     </div>
+    )}
     </>
   );
 }

@@ -22,9 +22,12 @@ import {
   ArrowUpFromLine,
   ChevronDown,
   ArrowRightLeft,
-  UserPlus
+  UserPlus,
+  ShieldCheck
 } from 'lucide-react';
 import { Bet } from '../hooks/useGameLogic';
+import { db } from '../firebase';
+import { collection, query, where, getDocs, updateDoc, doc, increment, addDoc, runTransaction } from 'firebase/firestore';
 
 interface SidebarMenuProps {
   isOpen: boolean;
@@ -34,8 +37,9 @@ interface SidebarMenuProps {
   setRealBalance: (amount: number | ((prev: number) => number)) => void;
   usdtBalance: number;
   setUsdtBalance: (amount: number | ((prev: number) => number)) => void;
-  setActivePage: (page: 'TRADE' | 'STREAK_CHALLENGE' | 'VIP_AFFILIATE' | 'PROFILE' | 'DASHBOARD') => void;
-  activePage: 'TRADE' | 'STREAK_CHALLENGE' | 'VIP_AFFILIATE' | 'PROFILE' | 'DASHBOARD';
+  setActivePage: (page: 'TRADE' | 'STREAK_CHALLENGE' | 'VIP_AFFILIATE' | 'PROFILE' | 'DASHBOARD' | 'BOT' | 'SETTINGS' | 'ADMIN') => void;
+  activePage: 'TRADE' | 'STREAK_CHALLENGE' | 'VIP_AFFILIATE' | 'PROFILE' | 'DASHBOARD' | 'BOT' | 'SETTINGS' | 'ADMIN';
+  userProfile: any;
 }
 
 type View = 'MENU' | 'ORDERS' | 'WALLET';
@@ -52,7 +56,8 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
   usdtBalance,
   setUsdtBalance,
   setActivePage,
-  activePage
+  activePage,
+  userProfile
 }) => {
   const [activeView, setActiveView] = useState<View>('MENU');
   const [activeTab, setActiveTab] = useState<OrderTab>('OPEN');
@@ -66,6 +71,138 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
   const [transferDirection, setTransferDirection] = useState<TransferDirection>('USDT_TO_REAL');
   const [transferAmount, setTransferAmount] = useState<string>('');
   const [selectedMenu, setSelectedMenu] = useState<string>(activePage);
+
+  // Withdrawal State
+  const [withdrawAmount, setWithdrawAmount] = useState<string>('');
+  const [withdrawNickname, setWithdrawNickname] = useState<string>('');
+  const [withdrawNote, setWithdrawNote] = useState<string>('');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleCopyDepositAddress = () => {
+    navigator.clipboard.writeText("0x1234567890abcdef1234567890abcdef12345678");
+    showToast("Đã sao chép địa chỉ ví!");
+  };
+
+  const handleMaxWithdraw = () => {
+    setWithdrawAmount(usdtBalance.toString());
+  };
+
+  const handlePasteNickname = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      setWithdrawNickname(text);
+    } catch (err) {
+      showToast("Không thể dán từ clipboard");
+    }
+  };
+
+  const handleWithdrawSubmit = async () => {
+    const amount = parseFloat(withdrawAmount);
+    if (isNaN(amount) || amount < 5) {
+      showToast("Số tiền tối thiểu là 5 USDT");
+      return;
+    }
+    if (amount > usdtBalance) {
+      showToast("Số dư không đủ");
+      return;
+    }
+    if (!withdrawNickname.trim()) {
+      showToast("Vui lòng nhập biệt danh người nhận");
+      return;
+    }
+    if (withdrawNickname.toLowerCase() === userProfile?.nickname?.toLowerCase()) {
+      showToast("Không thể chuyển tiền cho chính mình");
+      return;
+    }
+
+    try {
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('nickname', '==', withdrawNickname));
+      const querySnapshot = await getDocs(q);
+
+      if (querySnapshot.empty) {
+        showToast(`Không tìm thấy biệt danh "${withdrawNickname}"`);
+        return;
+      }
+
+      const recipientDoc = querySnapshot.docs[0];
+      
+      if (userProfile?.uid) {
+        if (userProfile.uid === recipientDoc.id) {
+          showToast("Không thể chuyển tiền cho chính mình");
+          return;
+        }
+
+        try {
+          await runTransaction(db, async (transaction) => {
+            const senderRef = doc(db, 'users', userProfile.uid);
+            const recipientRef = doc(db, 'users', recipientDoc.id);
+
+            const senderDocSnap = await transaction.get(senderRef);
+            if (!senderDocSnap.exists()) {
+              throw new Error("Không tìm thấy thông tin người gửi");
+            }
+
+            const currentBalance = senderDocSnap.data().usdtBalance || 0;
+            if (currentBalance < amount) {
+              throw new Error("Số dư không đủ");
+            }
+
+            transaction.update(senderRef, {
+              usdtBalance: increment(-amount)
+            });
+
+            transaction.update(recipientRef, {
+              usdtBalance: increment(amount)
+            });
+          });
+
+          // Create notification for recipient
+          await addDoc(collection(db, 'notifications'), {
+            userId: recipientDoc.id,
+            type: 'Nhận tiền nội bộ',
+            from: userProfile.nickname || 'Người dùng',
+            to: withdrawNickname,
+            amount: amount,
+            read: false,
+            createdAt: new Date().toISOString()
+          });
+
+          // Create notification for sender
+          await addDoc(collection(db, 'notifications'), {
+            userId: userProfile.uid,
+            type: 'Chuyển tiền nội bộ',
+            from: userProfile.nickname || 'Người dùng',
+            to: withdrawNickname,
+            amount: -amount,
+            read: false,
+            createdAt: new Date().toISOString()
+          });
+
+          // Update sender's balance locally
+          setUsdtBalance(prev => prev - amount);
+          showToast(`Chuyển thành công ${amount} USDT đến ${withdrawNickname}`);
+          setWithdrawAmount('');
+          setWithdrawNickname('');
+          setWithdrawNote('');
+          setTimeout(() => {
+            setIsDepositModalOpen(false);
+          }, 1500);
+        } catch (error: any) {
+          console.error("Transaction error:", error);
+          showToast(error.message || "Có lỗi xảy ra khi chuyển tiền");
+        }
+      }
+    } catch (error) {
+      console.error("Error transferring funds:", error);
+      showToast("Có lỗi xảy ra khi chuyển tiền");
+    }
+  };
 
   // Sync selectedMenu with activePage
   React.useEffect(() => {
@@ -104,24 +241,74 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
     }).format(date);
   };
 
-  const handleTransfer = () => {
+  const handleTransfer = async () => {
     const amount = parseFloat(transferAmount);
     if (isNaN(amount) || amount <= 0) return;
 
-    if (transferDirection === 'USDT_TO_REAL') {
-      if (usdtBalance >= amount) {
-        setUsdtBalance(prev => prev - amount);
-        setRealBalance(prev => prev + amount);
+    try {
+      if (userProfile?.uid) {
+        await runTransaction(db, async (transaction) => {
+          const userRef = doc(db, 'users', userProfile.uid);
+          const userDocSnap = await transaction.get(userRef);
+          
+          if (!userDocSnap.exists()) {
+            throw new Error("Không tìm thấy thông tin người dùng");
+          }
+
+          const currentUsdt = userDocSnap.data().usdtBalance || 0;
+          const currentReal = userDocSnap.data().realBalance || 0;
+
+          if (transferDirection === 'USDT_TO_REAL') {
+            if (currentUsdt < amount) {
+              throw new Error("Số dư USDT không đủ");
+            }
+            transaction.update(userRef, {
+              usdtBalance: increment(-amount),
+              realBalance: increment(amount)
+            });
+          } else {
+            if (currentReal < amount) {
+              throw new Error("Số dư Thực không đủ");
+            }
+            transaction.update(userRef, {
+              realBalance: increment(-amount),
+              usdtBalance: increment(amount)
+            });
+          }
+        });
+
+        if (transferDirection === 'USDT_TO_REAL') {
+          await addDoc(collection(db, 'notifications'), {
+            userId: userProfile.uid,
+            type: 'Nạp tiền',
+            from: 'Ví USDT',
+            to: 'Ví Thực',
+            amount: amount,
+            read: false,
+            createdAt: new Date().toISOString()
+          });
+          setUsdtBalance(prev => prev - amount);
+          setRealBalance(prev => prev + amount);
+        } else {
+          await addDoc(collection(db, 'notifications'), {
+            userId: userProfile.uid,
+            type: 'Rút tiền',
+            from: 'Ví Thực',
+            to: 'Ví USDT',
+            amount: amount,
+            read: false,
+            createdAt: new Date().toISOString()
+          });
+          setRealBalance(prev => prev - amount);
+          setUsdtBalance(prev => prev + amount);
+        }
+        
         setTransferAmount('');
         setIsTransferModalOpen(false);
       }
-    } else {
-      if (realBalance >= amount) {
-        setRealBalance(prev => prev - amount);
-        setUsdtBalance(prev => prev + amount);
-        setTransferAmount('');
-        setIsTransferModalOpen(false);
-      }
+    } catch (error: any) {
+      console.error("Transfer error:", error);
+      showToast(error.message || "Có lỗi xảy ra khi chuyển tiền");
     }
   };
 
@@ -214,10 +401,11 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
                       setIsDepositModalOpen(true);
                       setActiveDepositTab('DEPOSIT');
                     }}
-                    className="w-full bg-[#22C55E] hover:bg-[#16A34A] text-white font-bold py-3 rounded-lg shadow-[0_0_15px_rgba(34,197,94,0.3)] transition-all flex items-center justify-center gap-2"
+                    className="w-full bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-white font-bold py-3 rounded-lg shadow-[0_0_15px_rgba(16,185,129,0.4)] hover:shadow-[0_0_25px_rgba(16,185,129,0.6)] transition-all duration-300 flex items-center justify-center gap-2 relative overflow-hidden group hover:-translate-y-0.5"
                   >
-                    <CreditCard className="w-5 h-5" />
-                    <span>Nạp Tiền</span>
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-[150%] group-hover:translate-x-[150%] transition-transform duration-700 ease-in-out z-0" />
+                    <CreditCard className="w-5 h-5 relative z-10" />
+                    <span className="relative z-10">Nạp Tiền</span>
                   </button>
 
                   {/* Earn Money Section */}
@@ -240,6 +428,7 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
                       active={selectedMenu === 'BOT'}
                       onClick={() => {
                         setSelectedMenu('BOT');
+                        setActivePage('BOT');
                         onClose();
                       }}
                     />
@@ -278,10 +467,16 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
                         onClose();
                       }}
                     >
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${selectedMenu === 'PROFILE' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 group-hover:bg-purple-600 group-hover:text-white'}`}>
-                        <User className="w-4 h-4" />
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors overflow-hidden ${selectedMenu === 'PROFILE' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 group-hover:bg-purple-600 group-hover:text-white'}`}>
+                        {userProfile?.avatarUrl ? (
+                          <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                        ) : (
+                          <User className="w-4 h-4" />
+                        )}
                       </div>
-                      <span className={`font-medium transition-colors ${selectedMenu === 'PROFILE' ? 'text-white' : 'text-slate-200 group-hover:text-white'}`}>Admin</span>
+                      <span className={`font-medium transition-colors ${selectedMenu === 'PROFILE' ? 'text-white' : 'text-slate-200 group-hover:text-white'}`}>
+                        {userProfile?.nickname || 'User'}
+                      </span>
                     </div>
 
                     <MenuItem 
@@ -317,12 +512,27 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
                   {/* Settings Section */}
                   <div className="space-y-2">
                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Cài đặt & Trợ giúp</h3>
+                    
+                    {userProfile?.role === 'admin' && (
+                      <MenuItem 
+                        icon={ShieldCheck} 
+                        label="Admin Dashboard" 
+                        active={selectedMenu === 'ADMIN'}
+                        onClick={() => {
+                          setSelectedMenu('ADMIN');
+                          setActivePage('ADMIN');
+                          onClose();
+                        }}
+                      />
+                    )}
+
                     <MenuItem 
                       icon={Settings} 
                       label="Cài đặt" 
                       active={selectedMenu === 'SETTINGS'}
                       onClick={() => {
                         setSelectedMenu('SETTINGS');
+                        setActivePage('SETTINGS');
                         onClose();
                       }}
                     />
@@ -698,7 +908,10 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
                   {/* Network Selection */}
                   <div>
                     <div className="text-sm text-slate-400 mb-1.5">Mạng lưới</div>
-                    <button className="bg-[#32B11D] text-white font-bold py-2.5 px-6 rounded-lg">
+                    <button 
+                      onClick={() => showToast("Chỉ hỗ trợ mạng BEP20 (BSC) hiện tại")}
+                      className="bg-[#32B11D] text-white font-bold py-2.5 px-6 rounded-lg"
+                    >
                       BEP20 (BSC)
                     </button>
                   </div>
@@ -728,7 +941,10 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
                       Số tiền tối thiểu: 5 USDT
                     </div>
 
-                    <button className="w-full max-w-xs bg-[#00C896] hover:bg-[#00B386] text-white font-bold py-3 rounded-lg transition-colors">
+                    <button 
+                      onClick={handleCopyDepositAddress}
+                      className="w-full max-w-xs bg-[#00C896] hover:bg-[#00B386] text-white font-bold py-3 rounded-lg transition-colors"
+                    >
                       Sao chép
                     </button>
                   </div>
@@ -740,7 +956,10 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
                   <div>
                     <div className="text-sm text-slate-400 mb-1.5">Mạng lưới</div>
                     <div className="flex gap-2">
-                      <button className="flex-1 bg-[#32B11D] text-white py-2.5 px-4 rounded-lg flex flex-col items-center justify-center relative border border-[#32B11D]">
+                      <button 
+                        onClick={() => showToast("Chỉ hỗ trợ chuyển nội bộ hiện tại")}
+                        className="flex-1 bg-[#32B11D] text-white py-2.5 px-4 rounded-lg flex flex-col items-center justify-center relative border border-[#32B11D]"
+                      >
                         <span className="font-bold">Nội bộ</span>
                         <span className="text-xs text-white/80">Phí: 0 USDT</span>
                         <div className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center border-2 border-[#0B101B]">
@@ -757,10 +976,15 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
                     <div className="relative">
                       <input 
                         type="text" 
+                        value={withdrawAmount}
+                        onChange={(e) => setWithdrawAmount(e.target.value)}
                         placeholder="Số tiền tối thiểu: 5 USDT"
                         className="w-full bg-[#1C2127] border border-white/10 rounded-lg py-3 px-4 text-white placeholder:text-slate-500 focus:outline-none focus:border-[#32B11D] transition-colors"
                       />
-                      <button className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#32B11D] text-white text-sm font-bold px-3 py-1.5 rounded">
+                      <button 
+                        onClick={handleMaxWithdraw}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#32B11D] text-white text-sm font-bold px-3 py-1.5 rounded"
+                      >
                         Max
                       </button>
                     </div>
@@ -771,6 +995,8 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
                     <div className="text-sm text-slate-400">Biệt danh người nhận</div>
                     <input 
                       type="text" 
+                      value={withdrawNickname}
+                      onChange={(e) => setWithdrawNickname(e.target.value)}
                       placeholder="Nhập biệt danh người nhận"
                       className="w-full bg-[#1C2127] border border-white/10 rounded-lg py-3 px-4 text-white placeholder:text-slate-500 focus:outline-none focus:border-[#32B11D] transition-colors"
                     />
@@ -782,10 +1008,15 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
                     <div className="relative">
                       <input 
                         type="text" 
+                        value={withdrawNote}
+                        onChange={(e) => setWithdrawNote(e.target.value)}
                         placeholder="Nhập ghi chú của bạn (tối đa 50 ký tự)"
-                        className="w-full bg-[#1C2127] border border-white/10 rounded-lg py-3 px-4 text-white placeholder:text-slate-500 focus:outline-none focus:border-[#32B11D] transition-colors"
+                        className="w-full bg-[#1C2127] border border-white/10 rounded-lg py-3 px-4 pr-16 text-white placeholder:text-slate-500 focus:outline-none focus:border-[#32B11D] transition-colors"
                       />
-                      <button className="absolute right-4 top-1/2 -translate-y-1/2 text-[#32B11D] text-sm font-medium">
+                      <button 
+                        onClick={handlePasteNickname}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-[#32B11D] text-sm font-medium"
+                      >
                         Paste
                       </button>
                     </div>
@@ -793,13 +1024,29 @@ export const SidebarMenu: React.FC<SidebarMenuProps> = ({
 
                   {/* Submit Button */}
                   <div className="pt-4">
-                    <button className="w-full bg-[#FF334B] hover:bg-[#E62E43] text-white font-bold py-3.5 rounded-lg transition-colors">
+                    <button 
+                      onClick={handleWithdrawSubmit}
+                      className="w-full bg-[#FF334B] hover:bg-[#E62E43] text-white font-bold py-3.5 rounded-lg transition-colors"
+                    >
                       Gửi
                     </button>
                   </div>
                 </>
               )}
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-xl z-[100] font-medium text-sm border border-slate-700"
+          >
+            {toastMessage}
           </motion.div>
         )}
       </AnimatePresence>

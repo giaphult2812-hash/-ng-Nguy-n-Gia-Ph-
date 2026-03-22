@@ -1,0 +1,110 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+        (request.auth.token.email == "giaphult2812@gmail.com")
+      );
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidUser(data) {
+      return (!('uid' in data) || (data.uid is string && data.uid.size() < 100)) &&
+             (!('email' in data) || (data.email is string && data.email.size() < 100)) &&
+             (!('role' in data) || (data.role in ['user', 'admin'])) &&
+             (!('realBalance' in data) || (data.realBalance is number && data.realBalance >= 0)) &&
+             (!('usdtBalance' in data) || (data.usdtBalance is number && data.usdtBalance >= 0)) &&
+             (!('demoBalance' in data) || (data.demoBalance is number && data.demoBalance >= 0)) &&
+             (!('createdAt' in data) || data.createdAt is string) &&
+             (!('nickname' in data) || (data.nickname is string && data.nickname.size() < 50)) &&
+             (!('firstName' in data) || (data.firstName is string && data.firstName.size() < 50)) &&
+             (!('lastName' in data) || (data.lastName is string && data.lastName.size() < 50)) &&
+             (!('avatarUrl' in data) || data.avatarUrl == null || (data.avatarUrl is string && data.avatarUrl.size() < 500)) &&
+             (!('referral' in data) || (data.referral is string && data.referral.size() < 50));
+    }
+
+    function isValidBet(data) {
+      return data.id is string && data.id.size() < 50 &&
+             data.userId is string && data.userId.size() < 100 &&
+             data.amount is number && data.amount > 0 &&
+             data.asset is string && data.asset.size() < 20 &&
+             data.prediction in ['UP', 'DOWN'] &&
+             data.entryPrice is number && data.entryPrice > 0 &&
+             data.status in ['PENDING', 'WIN', 'LOSS', 'TIE'] &&
+             data.createdAt is string;
+    }
+
+    function isValidNotification(data) {
+      return data.userId is string && data.userId.size() < 100 &&
+             data.type is string && data.type.size() < 100 &&
+             data.from is string && data.from.size() < 100 &&
+             data.to is string && data.to.size() < 100 &&
+             data.amount is number &&
+             data.read is bool &&
+             data.createdAt is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      
+      allow create: if isAuthenticated() && 
+                    isOwner(userId) && 
+                    isValidUser(request.resource.data) && 
+                    request.resource.data.uid == userId &&
+                    (request.resource.data.role == 'user' || isAdmin());
+
+      allow update: if isAuthenticated() && 
+                    isValidUser(request.resource.data) && 
+                    (!('uid' in resource.data) || request.resource.data.uid == resource.data.uid) &&
+                    (
+                      (isOwner(userId) && (!('role' in resource.data) || request.resource.data.role == resource.data.role)) || 
+                      isAdmin() ||
+                      (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usdtBalance']))
+                    );
+    }
+
+    match /bets/{betId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin());
+      
+      allow create: if isAuthenticated() && 
+                    request.resource.data.userId == request.auth.uid &&
+                    isValidBet(request.resource.data);
+
+      allow update: if isAuthenticated() && 
+                    isValidBet(request.resource.data) &&
+                    request.resource.data.userId == resource.data.userId &&
+                    (request.auth.uid == resource.data.userId || isAdmin());
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      
+      allow create: if isAuthenticated() && isValidNotification(request.resource.data);
+
+      allow update: if isAuthenticated() && 
+                    isValidNotification(request.resource.data) &&
+                    request.auth.uid == resource.data.userId &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+    }
+  }
+}

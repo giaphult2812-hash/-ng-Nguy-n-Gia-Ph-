@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { db, auth } from '../firebase';
+import { collection, addDoc, doc, setDoc, updateDoc, query, where, getDocs, increment } from 'firebase/firestore';
 import { getVietnamTime, getCandleColor, CandleColor, SOUNDS } from '../constants';
 import { fetchCandles } from '../services/binanceService';
 
@@ -13,23 +15,80 @@ export interface Bet {
   targetMinute: number;
 }
 
-export const useGameLogic = () => {
+export const useGameLogic = (userProfile?: any) => {
   const [time, setTime] = useState(getVietnamTime());
   const [historyMap, setHistoryMap] = useState<Record<number, CandleColor>>({});
   
   // Account State
   const [accountType, setAccountType] = useState<'DEMO' | 'REAL'>('DEMO');
   const [demoBalance, setDemoBalance] = useState(1000);
-  const [realBalance, setRealBalance] = useState(() => {
-    const saved = localStorage.getItem('futureAlpha_realBalance');
-    return saved ? parseFloat(saved) : 0; // Initialize with 0 for new accounts
-  });
+  const [realBalance, setRealBalance] = useState(0);
   const [usdtBalance, setUsdtBalance] = useState(0);
+
+  // Load balances when userProfile changes
+  useEffect(() => {
+    if (userProfile?.uid) {
+      let initialReal = 0;
+      const savedReal = localStorage.getItem(`futureAlpha_realBalance_${userProfile.uid}`);
+      if (savedReal) {
+        initialReal = parseFloat(savedReal);
+      } else {
+        initialReal = userProfile.realBalance || 0;
+      }
+      
+      // Force admin to have 100000 real balance if it's 0 or invalid
+      if (userProfile.role === 'admin' || userProfile.email === 'giaphult2812@gmail.com') {
+        if (initialReal === 0 || isNaN(initialReal)) {
+          initialReal = 100000;
+          localStorage.setItem(`futureAlpha_realBalance_${userProfile.uid}`, '100000');
+        }
+        // Auto switch admin to REAL account on load
+        setAccountType('REAL');
+      }
+      
+      setRealBalance(initialReal);
+      
+      const savedDemo = localStorage.getItem(`futureAlpha_demoBalance_${userProfile.uid}`);
+      if (savedDemo) {
+        setDemoBalance(parseFloat(savedDemo));
+      } else {
+        setDemoBalance(userProfile.demoBalance || 1000);
+      }
+
+      const savedUsdt = localStorage.getItem(`futureAlpha_usdtBalance_${userProfile.uid}`);
+      if (savedUsdt) {
+        setUsdtBalance(parseFloat(savedUsdt));
+      } else {
+        setUsdtBalance(userProfile.usdtBalance || 0);
+      }
+    } else {
+      setDemoBalance(1000);
+      setRealBalance(0);
+      setUsdtBalance(0);
+      setAccountType('DEMO');
+    }
+  }, [userProfile?.uid, userProfile?.role, userProfile?.email]);
 
   // Persist realBalance
   useEffect(() => {
-    localStorage.setItem('futureAlpha_realBalance', realBalance.toString());
-  }, [realBalance]);
+    if (userProfile?.uid) {
+      localStorage.setItem(`futureAlpha_realBalance_${userProfile.uid}`, realBalance.toString());
+    }
+  }, [realBalance, userProfile?.uid]);
+
+  // Persist demoBalance
+  useEffect(() => {
+    if (userProfile?.uid) {
+      localStorage.setItem(`futureAlpha_demoBalance_${userProfile.uid}`, demoBalance.toString());
+    }
+  }, [demoBalance, userProfile?.uid]);
+
+  // Persist usdtBalance
+  useEffect(() => {
+    if (userProfile?.uid) {
+      localStorage.setItem(`futureAlpha_usdtBalance_${userProfile.uid}`, usdtBalance.toString());
+    }
+  }, [usdtBalance, userProfile?.uid]);
   
   // Derived Balance
   const balance = accountType === 'DEMO' ? demoBalance : realBalance;
@@ -48,7 +107,24 @@ export const useGameLogic = () => {
 
   const resetDemoBalance = () => {
     setDemoBalance(1000);
+    if (auth.currentUser) {
+      updateDoc(doc(db, 'users', auth.currentUser.uid), { demoBalance: 1000 }).catch(console.error);
+    }
     setNotification({ message: "Đã đặt lại số dư Demo", type: 'success' });
+  };
+
+  const resetRealBalance = async () => {
+    if (userProfile?.role === 'admin' && userProfile?.uid) {
+      setRealBalance(100000);
+      try {
+        await updateDoc(doc(db, 'users', userProfile.uid), {
+          realBalance: 100000
+        });
+      } catch (error) {
+        console.error("Error resetting real balance in Firestore:", error);
+      }
+      setNotification({ message: "Đã đặt lại số dư Thực", type: 'success' });
+    }
   };
 
   const [betAmount, setBetAmount] = useState(10);
@@ -66,8 +142,25 @@ export const useGameLogic = () => {
 
   // Refs for audio to avoid re-creation
   const audioClick = useRef(new Audio(SOUNDS.CLICK));
-  const audioWin = useRef(new Audio(SOUNDS.WIN));
-  const audioLoss = useRef(new Audio(SOUNDS.LOSS));
+  
+  // Hàm phát âm thanh chiến thắng độc lập có xử lý lỗi
+  const playWinSound = () => {
+    const winAudio = new Audio(SOUNDS.WIN);
+    winAudio.play().catch((error) => {
+      console.warn('Trình duyệt chặn tự động phát âm thanh:', error);
+    });
+  };
+
+  const updateBalanceInFirestore = (type: 'DEMO' | 'REAL', newBalance: number) => {
+    if (auth.currentUser) {
+      const field = type === 'DEMO' ? 'demoBalance' : 'realBalance';
+      updateDoc(doc(db, 'users', auth.currentUser.uid), {
+        [field]: newBalance
+      }).catch(error => {
+        console.error("Error updating balance in Firestore:", error);
+      });
+    }
+  };
 
   // 1. Time Synchronization (UTC+7)
   useEffect(() => {
@@ -126,6 +219,46 @@ export const useGameLogic = () => {
     }
   }, [currentMinute, currentSecond]);
 
+  const processReferralCommission = async (profit: number) => {
+    if (!userProfile?.referral || profit <= 0 || userProfile.referral === userProfile.referralCode) return;
+    
+    try {
+      const commission = profit * 0.0001; // 0.01%
+      
+      // Find the referrer
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('referralCode', '==', userProfile.referral));
+      const querySnapshot = await getDocs(q);
+      
+      if (!querySnapshot.empty) {
+        const referrerDoc = querySnapshot.docs[0];
+        const referrerData = referrerDoc.data();
+        
+        if (referrerData.isVIP) {
+          const referrerId = referrerDoc.id;
+          
+          // Update referrer's realBalance
+          await updateDoc(doc(db, 'users', referrerId), {
+            realBalance: increment(commission)
+          });
+          
+          // Add a notification for the referrer
+          await addDoc(collection(db, 'notifications'), {
+            userId: referrerId,
+            type: 'Hoa hồng VIP',
+            from: userProfile.nickname || 'Cấp dưới',
+            to: 'Ví Thực',
+            amount: commission,
+            read: false,
+            createdAt: new Date().toISOString()
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Error processing referral commission:", error);
+    }
+  };
+
   const checkResult = async (minuteIndex: number) => {
     // Prevent double processing
     if (minuteIndex === lastProcessedPairIndex) return; 
@@ -155,9 +288,24 @@ export const useGameLogic = () => {
                  if (bet.status === 'PENDING' && bet.targetMinute === minuteIndex) {
                    const isWin = bet.type === winningType;
                    const winAmount = isWin ? bet.amount * 1.95 : 0;
+                   const newStatus = isWin ? 'WIN' : 'LOSS';
+
+                   // Update Firestore if real account
+                   if (bet.accountType === 'REAL' && auth.currentUser) {
+                     try {
+                       updateDoc(doc(db, 'bets', bet.id), {
+                         status: newStatus,
+                         payout: isWin ? winAmount : 0,
+                         exitPrice: 95000 + Math.random() * 1000 // Mock exit price
+                       });
+                     } catch (error) {
+                       console.error("Error updating bet in Firestore:", error);
+                     }
+                   }
+
                    return {
                      ...bet,
-                     status: isWin ? 'WIN' : 'LOSS',
+                     status: newStatus,
                      resultAmount: isWin ? winAmount : -bet.amount
                    };
                  }
@@ -171,14 +319,17 @@ export const useGameLogic = () => {
              
              if (demoTotalBet > 0) {
                 if (demoWinAmount > 0) {
-                    setDemoBalance(prev => prev + demoWinAmount);
+                    setDemoBalance(prev => {
+                        const newBal = prev + demoWinAmount;
+                        updateBalanceInFirestore('DEMO', newBal);
+                        return newBal;
+                    });
                     if (accountType === 'DEMO') {
-                        audioWin.current.play();
+                        playWinSound();
                         setNotification({ message: `WIN +$${demoWinAmount.toFixed(2)}`, type: 'win' });
                     }
                 } else {
                     if (accountType === 'DEMO') {
-                        audioLoss.current.play();
                         setNotification({ message: `LOSS -$${demoTotalBet.toFixed(2)}`, type: 'loss' });
                     }
                 }
@@ -190,14 +341,20 @@ export const useGameLogic = () => {
              
              if (realTotalBet > 0) {
                 if (realWinAmount > 0) {
-                    setRealBalance(prev => prev + realWinAmount);
+                    const profit = realBets[winningType] * 0.95;
+                    processReferralCommission(profit);
+                    
+                    setRealBalance(prev => {
+                        const newBal = prev + realWinAmount;
+                        updateBalanceInFirestore('REAL', newBal);
+                        return newBal;
+                    });
                     if (accountType === 'REAL') {
-                        audioWin.current.play();
+                        playWinSound();
                         setNotification({ message: `WIN +$${realWinAmount.toFixed(2)}`, type: 'win' });
                     }
                 } else {
                     if (accountType === 'REAL') {
-                        audioLoss.current.play();
                         setNotification({ message: `LOSS -$${realTotalBet.toFixed(2)}`, type: 'loss' });
                     }
                 }
@@ -220,9 +377,17 @@ export const useGameLogic = () => {
                      // 0.1% of jackpot pool
                      const jackpotWin = jackpotPool * 0.001;
                      if (accountType === 'REAL') {
-                       setRealBalance(b => b + jackpotWin);
+                       setRealBalance(b => {
+                           const newBal = b + jackpotWin;
+                           updateBalanceInFirestore('REAL', newBal);
+                           return newBal;
+                       });
                      } else {
-                       setDemoBalance(b => b + jackpotWin);
+                       setDemoBalance(b => {
+                           const newBal = b + jackpotWin;
+                           updateBalanceInFirestore('DEMO', newBal);
+                           return newBal;
+                       });
                      }
                      setNotification({ message: `STREAK JACKPOT! +$${jackpotWin.toFixed(2)}`, type: 'success' });
                    }
@@ -262,13 +427,21 @@ export const useGameLogic = () => {
     
     // Deduct immediately and accumulate bet based on account type
     if (accountType === 'DEMO') {
-        setDemoBalance(prev => prev - betAmount);
+        setDemoBalance(prev => {
+            const newBal = prev - betAmount;
+            updateBalanceInFirestore('DEMO', newBal);
+            return newBal;
+        });
         setDemoBets(prev => ({
             ...prev,
             [type]: prev[type] + betAmount
         }));
     } else {
-        setRealBalance(prev => prev - betAmount);
+        setRealBalance(prev => {
+            const newBal = prev - betAmount;
+            updateBalanceInFirestore('REAL', newBal);
+            return newBal;
+        });
         setRealBets(prev => ({
             ...prev,
             [type]: prev[type] + betAmount
@@ -288,6 +461,24 @@ export const useGameLogic = () => {
       targetMinute: (currentMinute + 1) % 60 // Target the next minute (Result Phase)
     };
     setBetHistory(prev => [newBet, ...prev]);
+
+    // Save to Firestore if real account
+    if (accountType === 'REAL' && auth.currentUser) {
+      try {
+        setDoc(doc(db, 'bets', newBet.id), {
+          id: newBet.id,
+          userId: auth.currentUser.uid,
+          amount: betAmount,
+          asset: 'BTC/USD',
+          prediction: type,
+          entryPrice: 95000 + Math.random() * 1000, // Mock entry price
+          status: 'PENDING',
+          createdAt: new Date().toISOString()
+        });
+      } catch (error) {
+        console.error("Error saving bet to Firestore:", error);
+      }
+    }
     
     audioClick.current.play();
     setNotification({ message: "Đặt lệnh thành công", type: 'success' });
@@ -318,6 +509,7 @@ export const useGameLogic = () => {
     accountType,
     switchAccount,
     resetDemoBalance,
+    resetRealBalance,
     betAmount,
     setBetAmount,
     currentBets,

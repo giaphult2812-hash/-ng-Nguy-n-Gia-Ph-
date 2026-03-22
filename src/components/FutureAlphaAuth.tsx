@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { X, EyeOff, Mail } from 'lucide-react';
+import { X, EyeOff, Eye, Mail } from 'lucide-react';
+import { auth, db } from '../firebase';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, sendEmailVerification, sendPasswordResetEmail } from 'firebase/auth';
+import { doc, setDoc, getDoc, updateDoc } from 'firebase/firestore';
 
 interface Props {
-  onAuthenticated: () => void;
+  onAuthenticated: (profile: any) => void;
 }
 
 export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
-  const [isLogin, setIsLogin] = useState(false);
+  const [isLogin, setIsLogin] = useState(true);
   const [isCheckEmail, setIsCheckEmail] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   
@@ -19,6 +22,37 @@ export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
   // Login state
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  
+  const [showPassword, setShowPassword] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
+
+  const handleForgotPassword = async () => {
+    if (!loginEmail.trim()) {
+      setErrorMsg('Vui lòng nhập email để khôi phục mật khẩu!');
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, loginEmail.trim());
+      setSuccessMsg('Email khôi phục mật khẩu đã được gửi. Vui lòng kiểm tra hộp thư của bạn.');
+      setErrorMsg('');
+    } catch (error: any) {
+      setErrorMsg('Lỗi gửi email khôi phục: ' + error.message);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    if (!loginEmail.trim()) {
+      setErrorMsg('Vui lòng nhập email để gửi lại xác nhận!');
+      return;
+    }
+    try {
+      // We can't easily resend without the user object, so we'll just show a message or try to sign in to get the user
+      setErrorMsg('Vui lòng đăng nhập để hệ thống gửi lại email xác nhận nếu tài khoản chưa kích hoạt.');
+    } catch (error: any) {
+      setErrorMsg('Lỗi: ' + error.message);
+    }
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -28,52 +62,162 @@ export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
         setLoginEmail(verifiedEmail);
       }
       setIsLogin(true);
-      alert('Xác thực email thành công! Vui lòng đăng nhập.');
+      setSuccessMsg('Xác thực email thành công! Vui lòng đăng nhập.');
       // Remove query params to clean up URL
       window.history.replaceState({}, document.title, window.location.pathname);
     }
+    
+    const refCode = params.get('ref');
+    if (refCode) {
+      setReferral(refCode);
+      setIsLogin(false); // Switch to register tab
+    }
   }, []);
 
-  const handleRegister = async () => {
-    if (email && password) {
+  const handleRegister = (e: React.MouseEvent) => {
+    e.preventDefault(); // Chặn form reload
+    setErrorMsg('');
+    setSuccessMsg('');
+    const trimmedEmail = email.trim();
+    const trimmedPassword = password.trim();
+    
+    if (trimmedEmail && trimmedPassword) {
       setIsLoading(true);
-      setTimeout(() => {
-        setIsLoading(false);
-        localStorage.setItem('futurealpha_user', JSON.stringify({ email, password, nickname }));
-        localStorage.setItem('futurealpha_demo_balance', '10000');
-        setIsCheckEmail(true);
-      }, 1000);
+      
+      createUserWithEmailAndPassword(auth, trimmedEmail, trimmedPassword)
+        .then((userCredential) => {
+          const user = userCredential.user;
+          
+          const newProfile = {
+            uid: user.uid,
+            email: trimmedEmail,
+            nickname: nickname || trimmedEmail.split('@')[0],
+            firstName: '',
+            lastName: '',
+            avatarUrl: null,
+            referral: referral,
+            role: trimmedEmail === 'giaphult2812@gmail.com' ? 'admin' : 'user',
+            realBalance: trimmedEmail === 'giaphult2812@gmail.com' ? 100000 : 0,
+            usdtBalance: 0,
+            demoBalance: 10000,
+            createdAt: new Date().toISOString()
+          };
+
+          // Lưu user vào firestore
+          return setDoc(doc(db, 'users', user.uid), newProfile);
+        })
+        .then(() => {
+          setIsLoading(false);
+          setIsLogin(true);
+          // Hiện thông báo alert
+          alert('Đăng ký thành công! Bạn có thể đăng nhập ngay bây giờ.');
+          setSuccessMsg(`Đăng ký thành công! Vui lòng đăng nhập bằng tài khoản vừa tạo.`);
+        })
+        .catch((error: any) => {
+          console.log('Lỗi Firebase:', error);
+          setIsLoading(false);
+          if (error.code === 'auth/email-already-in-use') {
+            setErrorMsg('Email này đã được đăng ký!');
+          } else if (error.code === 'auth/weak-password') {
+            setErrorMsg('Mật khẩu quá yếu. Vui lòng chọn mật khẩu có ít nhất 6 ký tự.');
+          } else if (error.code === 'auth/invalid-email') {
+            setErrorMsg('Địa chỉ email không hợp lệ!');
+          } else if (error.code === 'auth/unauthorized-domain') {
+            setErrorMsg('Tên miền chưa được cấp phép trong Firebase Auth. Vui lòng thêm tên miền này vào danh sách Authorized domains trong Firebase Console.');
+          } else if (error.code === 'auth/operation-not-allowed') {
+            setErrorMsg('Lỗi: Phương thức đăng nhập bằng Email/Mật khẩu chưa được bật. Vui lòng vào Firebase Console -> Authentication -> Sign-in method để bật "Email/Password".');
+          } else {
+            setErrorMsg('Lỗi đăng ký: ' + error.message);
+          }
+        });
     } else {
-      alert("Vui lòng nhập email và mật khẩu!");
+      setErrorMsg("Vui lòng nhập email và mật khẩu!");
     }
   };
 
-  const handleLogin = () => {
-    if (loginEmail && loginPassword) {
+  const handleLogin = async () => {
+    setErrorMsg('');
+    setSuccessMsg('');
+    const trimmedEmail = loginEmail.trim();
+    const trimmedPassword = loginPassword.trim();
+    if (trimmedEmail && trimmedPassword) {
       setIsLoading(true);
-      setTimeout(() => {
+      
+      // Always allow demo account
+      if (trimmedEmail === 'demo@futurealpha.net' && trimmedPassword === '123456') {
+        const demoProfile = { 
+          uid: 'demo-user-id',
+          email: trimmedEmail, 
+          nickname: 'Demo User', 
+          role: 'user',
+          realBalance: 0,
+          usdtBalance: 0,
+          demoBalance: 10000,
+          referral: '', 
+          firstName: '', 
+          lastName: '', 
+          avatarUrl: null 
+        };
+        localStorage.setItem('futureAlpha_userProfile', JSON.stringify(demoProfile));
         setIsLoading(false);
-        const storedUserStr = localStorage.getItem('futurealpha_user');
-        if (storedUserStr) {
-          const storedUser = JSON.parse(storedUserStr);
-          if (storedUser.email === loginEmail && storedUser.password === loginPassword) {
-            onAuthenticated();
-          } else {
-            alert('Email hoặc mật khẩu không đúng!');
-          }
-        } else {
-          // Allow default login if no user is registered yet for demo purposes
-          if (loginEmail === 'demo@futurealpha.net' && loginPassword === '123456') {
-            localStorage.setItem('futurealpha_user', JSON.stringify({ email: loginEmail, password: loginPassword, nickname: 'Demo User' }));
-            localStorage.setItem('futurealpha_demo_balance', '10000');
-            onAuthenticated();
-          } else {
-            alert('Tài khoản không tồn tại! (Dùng demo@futurealpha.net / 123456 để test)');
-          }
+        onAuthenticated(demoProfile);
+        return;
+      }
+
+      try {
+        const userCredential = await signInWithEmailAndPassword(auth, trimmedEmail, trimmedPassword);
+        const user = userCredential.user;
+        
+        if (!user.emailVerified && user.email !== 'demo@futurealpha.net') {
+          // In a real production app, we would block login here.
+          // For testing/demo purposes, we will allow login but show a warning.
+          console.warn('Tài khoản chưa được kích hoạt, nhưng cho phép đăng nhập để test.');
         }
-      }, 1000);
+        
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          
+          // Force admin to have 100000 real balance if it's 0 (one-time fix)
+          if (userData.role === 'admin' && userData.realBalance === 0) {
+            userData.realBalance = 100000;
+            await updateDoc(doc(db, 'users', user.uid), { realBalance: 100000 });
+            localStorage.setItem(`futureAlpha_realBalance_${user.uid}`, '100000');
+          }
+
+          localStorage.setItem('futureAlpha_userProfile', JSON.stringify(userData));
+          onAuthenticated(userData);
+        } else {
+          // Fallback if document doesn't exist but auth succeeded
+          const fallbackProfile = {
+            uid: user.uid,
+            email: user.email,
+            nickname: user.email?.split('@')[0] || 'User',
+            role: user.email === 'giaphult2812@gmail.com' ? 'admin' : 'user',
+            realBalance: user.email === 'giaphult2812@gmail.com' ? 100000 : 0,
+            usdtBalance: 0,
+            demoBalance: 10000,
+            createdAt: new Date().toISOString()
+          };
+          await setDoc(doc(db, 'users', user.uid), fallbackProfile);
+          localStorage.setItem('futureAlpha_userProfile', JSON.stringify(fallbackProfile));
+          onAuthenticated(fallbackProfile);
+        }
+      } catch (error: any) {
+        console.error("Login error:", error);
+        setIsLoading(false);
+        if (error.code === 'auth/unauthorized-domain') {
+          setErrorMsg('Tên miền chưa được cấp phép trong Firebase Auth. Vui lòng thêm tên miền này vào danh sách Authorized domains trong Firebase Console.');
+        } else if (error.code === 'auth/operation-not-allowed') {
+          setErrorMsg('Lỗi: Phương thức đăng nhập bằng Email/Mật khẩu chưa được bật. Vui lòng vào Firebase Console -> Authentication -> Sign-in method để bật "Email/Password".');
+        } else if (error.code === 'auth/invalid-credential' || error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+          setErrorMsg('Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại!');
+        } else {
+          setErrorMsg('Lỗi đăng nhập: ' + error.message);
+        }
+      }
     } else {
-      alert('Vui lòng nhập email và mật khẩu!');
+      setErrorMsg('Vui lòng nhập email và mật khẩu!');
     }
   };
 
@@ -102,7 +246,10 @@ export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
             <span className="text-purple-500 font-bold text-xl tracking-wide">FutureAlpha</span>
           </div>
           <div className="flex justify-end">
-            <button className="w-10 h-10 bg-[#1E2329] rounded-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-[#2A2F36] transition-all">
+            <button 
+              onClick={() => setErrorMsg('Vui lòng đăng nhập hoặc đăng ký để tiếp tục.')}
+              className="w-10 h-10 bg-[#1E2329] rounded-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-[#2A2F36] transition-all"
+            >
               <X className="w-5 h-5" />
             </button>
           </div>
@@ -117,6 +264,8 @@ export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
             <p className="text-gray-400 max-w-[280px]">
               Vui lòng nhập mã OTP (123456) để xác thực tài khoản.
             </p>
+            {errorMsg && <div className="text-red-500 text-sm bg-red-500/10 p-3 rounded-lg w-full">{errorMsg}</div>}
+            {successMsg && <div className="text-purple-400 text-sm bg-purple-500/10 p-3 rounded-lg w-full border border-purple-500/20">{successMsg}</div>}
             <input 
               type="text" 
               placeholder="Nhập mã OTP..."
@@ -125,8 +274,8 @@ export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
                 if (e.target.value === '123456') {
                   setIsCheckEmail(false);
                   setIsLogin(true);
-                  setLoginEmail(email);
-                  alert('Xác thực thành công! Vui lòng đăng nhập.');
+                  setLoginEmail(email.trim());
+                  setSuccessMsg('Xác thực thành công! Vui lòng đăng nhập.');
                 }
               }}
             />
@@ -145,6 +294,9 @@ export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
             <h1 className="text-purple-500 font-bold text-3xl mb-10 leading-tight">
               Đăng nhập vào Tài khoản của bạn
             </h1>
+
+            {errorMsg && <div className="text-red-500 text-sm bg-red-500/10 p-3 rounded-lg mb-6">{errorMsg}</div>}
+            {successMsg && <div className="text-purple-400 text-sm bg-purple-500/10 p-3 rounded-lg mb-6 border border-purple-500/20">{successMsg}</div>}
 
             {/* Login Form */}
             <div className="space-y-6 flex-1">
@@ -165,18 +317,24 @@ export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
                 <label className="block text-sm font-medium text-gray-400">Mật khẩu *</label>
                 <div className="relative">
                   <input 
-                    type="password" 
+                    type={showPassword ? "text" : "password"} 
                     value={loginPassword}
                     onChange={(e) => setLoginPassword(e.target.value)}
                     placeholder="Điền mật khẩu..."
                     className="w-full bg-[#130720] border border-purple-500/20 rounded-lg py-3.5 px-4 pr-12 text-white placeholder:text-gray-600 focus:outline-none focus:border-purple-500 transition-colors"
                   />
-                  <button className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-400">
-                    <EyeOff className="w-5 h-5" />
+                  <button 
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-400"
+                  >
+                    {showPassword ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
                   </button>
                 </div>
                 <div className="text-right mt-2">
-                  <button className="text-purple-400 hover:text-purple-300 text-sm transition-colors">
+                  <button 
+                    onClick={handleForgotPassword}
+                    className="text-purple-400 hover:text-purple-300 text-sm transition-colors"
+                  >
                     Quên mật khẩu?
                   </button>
                 </div>
@@ -205,7 +363,10 @@ export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
               </div>
               <div>
                 <span className="text-gray-300">Không nhận được email xác nhận? </span>
-                <button className="text-purple-400 hover:text-purple-300 transition-colors">
+                <button 
+                  onClick={handleResendVerification}
+                  className="text-purple-400 hover:text-purple-300 transition-colors"
+                >
                   Yêu cầu một email mới.
                 </button>
               </div>
@@ -216,6 +377,9 @@ export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
             <h1 className="text-purple-500 font-bold text-xl text-center mb-8">
               Tạo tài khoản FutureAlpha
             </h1>
+
+            {errorMsg && <div className="text-red-500 text-sm bg-red-500/10 p-3 rounded-lg mb-6">{errorMsg}</div>}
+            {successMsg && <div className="text-purple-400 text-sm bg-purple-500/10 p-3 rounded-lg mb-6 border border-purple-500/20">{successMsg}</div>}
 
             {/* Register Form */}
             <div className="space-y-5 flex-1">
@@ -236,14 +400,17 @@ export const FutureAlphaAuth: React.FC<Props> = ({ onAuthenticated }) => {
                 <label className="block text-sm font-medium text-gray-300">Mật khẩu *</label>
                 <div className="relative">
                   <input 
-                    type="password" 
+                    type={showPassword ? "text" : "password"} 
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Điền mật khẩu..."
                     className="w-full bg-[#130720] border border-purple-500/20 rounded-lg py-3.5 px-4 pr-12 text-white placeholder:text-gray-600 focus:outline-none focus:border-purple-500 transition-colors"
                   />
-                  <button className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-400">
-                    <EyeOff className="w-5 h-5" />
+                  <button 
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-400"
+                  >
+                    {showPassword ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
                   </button>
                 </div>
                 <div className="text-right text-xs text-gray-500 mt-1">{password.length} / 20</div>
